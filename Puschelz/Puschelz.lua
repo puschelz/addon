@@ -108,6 +108,31 @@ local function classify_event(event)
   return nil
 end
 
+local function get_fallback_event_minutes(event_type, duration_minutes)
+  if duration_minutes and duration_minutes > 0 then
+    return duration_minutes
+  end
+
+  if event_type == "raid" then
+    return 180
+  end
+
+  return 120
+end
+
+local function normalize_end_time(start_ms, end_ms, event_type, duration_minutes)
+  if not start_ms then
+    return nil
+  end
+
+  if end_ms and end_ms > start_ms then
+    return end_ms
+  end
+
+  local fallback_minutes = get_fallback_event_minutes(event_type, duration_minutes)
+  return start_ms + (fallback_minutes * 60 * 1000)
+end
+
 local function ensure_db()
   if type(PuschelzDB) ~= "table" then
     PuschelzDB = {}
@@ -244,6 +269,7 @@ end
 
 local function build_calendar_payload()
   local events = {}
+  local seen = {}
 
   for _, month_offset in ipairs(CALENDAR_MONTH_OFFSETS) do
     local month_info = C_Calendar.GetMonthInfo(month_offset)
@@ -263,17 +289,18 @@ local function build_calendar_payload()
               )
 
               if start_ms then
-                local end_ms = calendar_time_to_ms(
+                local raw_end_ms = calendar_time_to_ms(
                   event.endTime,
                   month_info.year,
                   month_info.month,
                   month_day
                 )
-
-                if not end_ms then
-                  local fallback_minutes = event.duration and event.duration > 0 and event.duration or 120
-                  end_ms = start_ms + (fallback_minutes * 60 * 1000)
-                end
+                local end_ms = normalize_end_time(
+                  start_ms,
+                  raw_end_ms,
+                  event_type,
+                  event.duration
+                )
 
                 local wow_event_id = tonumber(event.eventID)
                 if not wow_event_id then
@@ -289,13 +316,26 @@ local function build_calendar_payload()
                   )
                 end
 
-                table.insert(events, {
-                  wowEventId = wow_event_id,
-                  title = event.title or "Untitled Event",
-                  eventType = event_type,
-                  startTime = start_ms,
-                  endTime = end_ms,
-                })
+                local title = event.title or "Untitled Event"
+                local dedupe_key = string.format(
+                  "%s|%s|%s|%s|%s",
+                  tostring(wow_event_id),
+                  tostring(start_ms),
+                  tostring(end_ms),
+                  tostring(event_type),
+                  tostring(title)
+                )
+
+                if not seen[dedupe_key] then
+                  seen[dedupe_key] = true
+                  table.insert(events, {
+                    wowEventId = wow_event_id,
+                    title = title,
+                    eventType = event_type,
+                    startTime = start_ms,
+                    endTime = end_ms,
+                  })
+                end
               end
             end
           end
