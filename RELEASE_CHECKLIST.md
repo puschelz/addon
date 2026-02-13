@@ -6,6 +6,10 @@ Use this for every addon release (`v0.13.1`, `v0.14.0`, ...).
 
 1. Edit `Puschelz/Puschelz.toc`:
    - `## Version: x.y.z`
+   - `## Interface: ...` for currently supported client builds.
+   - Use in-game to get the current interface number:
+     - `/run print(select(4, GetBuildInfo()))`
+   - Keep all supported major client interfaces comma-separated (example: `110200,120000`).
 2. Commit and push:
 
 ```bash

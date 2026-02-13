@@ -103,3 +103,15 @@ The `tabs[*].items[*]` and `calendar.events[*]` fields are intentionally aligned
 ## Releases
 
 See `RELEASE_CHECKLIST.md` for the repeatable version bump + tag + release flow.
+
+## Interface compatibility
+
+If WoW marks the addon as incompatible after a major patch/pre-patch, update:
+
+- `Puschelz/Puschelz.toc` -> `## Interface: ...`
+
+Get the current interface number in-game with:
+
+- `/run print(select(4, GetBuildInfo()))`
+
+Keep supported interfaces comma-separated (example: `110200,120000`).
