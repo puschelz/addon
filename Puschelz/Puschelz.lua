@@ -488,7 +488,8 @@ local function build_calendar_payload()
                   event.duration
                 )
 
-                local wow_event_id = tonumber(event.eventID)
+                local source_event_id = tonumber(event.eventID)
+                local wow_event_id = source_event_id
                 if not wow_event_id then
                   wow_event_id = stable_hash_number(
                     string.format(
@@ -527,6 +528,8 @@ local function build_calendar_payload()
                       monthOffset = month_offset,
                       monthDay = month_day,
                       eventIndex = event_index,
+                      sourceEventId = source_event_id,
+                      expectedStartTimeMs = start_ms,
                       eventPayload = event_payload,
                     })
                   end
@@ -588,6 +591,7 @@ local function process_next_calendar_attendee_event()
   end
 
   calendar_attendee_scan.activeRaidEvent = next_raid_event
+  next_raid_event.openRequestedAtMs = now_runtime_ms()
   C_Calendar.OpenEvent(
     next_raid_event.monthOffset,
     next_raid_event.monthDay,
@@ -596,17 +600,68 @@ local function process_next_calendar_attendee_event()
 end
 
 local function calendar_open_event_matches_active(active_raid_event, month_offset, month_day, event_index)
+  if active_raid_event.openRequestedAtMs then
+    local elapsed_since_open_ms = now_runtime_ms() - active_raid_event.openRequestedAtMs
+    if elapsed_since_open_ms > (CALENDAR_ATTENDEE_SCAN_TIMEOUT_SEC * 1000) then
+      return false
+    end
+  end
+
   if type(month_offset) ~= "number" then
+    month_offset = nil
+  end
+
+  if month_offset and (type(month_day) ~= "number" or type(event_index) ~= "number") then
+    month_offset = nil
+  end
+
+  if month_offset then
+    if active_raid_event.monthOffset ~= month_offset
+      or active_raid_event.monthDay ~= month_day
+      or active_raid_event.eventIndex ~= event_index
+    then
+      return false
+    end
+  end
+
+  if not C_Calendar or not C_Calendar.EventGetInfo then
     return true
   end
 
-  if type(month_day) ~= "number" or type(event_index) ~= "number" then
+  local opened_event_info = C_Calendar.EventGetInfo()
+  if type(opened_event_info) ~= "table" then
     return true
   end
 
-  return active_raid_event.monthOffset == month_offset
-    and active_raid_event.monthDay == month_day
-    and active_raid_event.eventIndex == event_index
+  local opened_event_id = tonumber(opened_event_info.eventID or opened_event_info.eventId)
+  if active_raid_event.sourceEventId and opened_event_id then
+    if active_raid_event.sourceEventId ~= opened_event_id then
+      return false
+    end
+  end
+
+  local month_info = C_Calendar.GetMonthInfo and C_Calendar.GetMonthInfo(active_raid_event.monthOffset)
+  local opened_start_ms = calendar_time_to_ms(
+    opened_event_info.startTime,
+    month_info and month_info.year,
+    month_info and month_info.month,
+    active_raid_event.monthDay
+  )
+  if opened_start_ms and active_raid_event.expectedStartTimeMs then
+    if opened_start_ms ~= active_raid_event.expectedStartTimeMs then
+      return false
+    end
+  end
+
+  local opened_title = type(opened_event_info.title) == "string" and opened_event_info.title or nil
+  local expected_title = active_raid_event.eventPayload and active_raid_event.eventPayload.title
+  if opened_title and opened_title ~= "" and type(expected_title) == "string" and expected_title ~= "" then
+    if opened_title ~= expected_title then
+      return false
+    end
+  end
+
+  return true
 end
 
 local function on_calendar_open_event(month_offset, month_day, event_index)
