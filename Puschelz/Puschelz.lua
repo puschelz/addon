@@ -28,6 +28,7 @@ local RAID_QUERY_COOLDOWN_MS = 8000
 local RAID_REPLY_TIMEOUT_MS = 4000
 local RAID_ROSTER_DEBOUNCE_SEC = 1.0
 local RAID_STATUS_ROW_COUNT = 40
+local CALENDAR_ATTENDEE_SCAN_TIMEOUT_SEC = 12
 
 local raid_status = {
   roster = {},
@@ -314,6 +315,7 @@ local calendar_attendee_scan = {
   events = nil,
   pendingRaidEvents = {},
   activeRaidEvent = nil,
+  scanGeneration = 0,
 }
 
 local function ensure_db()
@@ -649,6 +651,17 @@ local function capture_calendar()
   calendar_attendee_scan.events = events
   calendar_attendee_scan.pendingRaidEvents = pending_raid_events
   calendar_attendee_scan.activeRaidEvent = nil
+  calendar_attendee_scan.scanGeneration = calendar_attendee_scan.scanGeneration + 1
+  local scan_generation = calendar_attendee_scan.scanGeneration
+
+  if C_Timer and C_Timer.After then
+    C_Timer.After(CALENDAR_ATTENDEE_SCAN_TIMEOUT_SEC, function()
+      if calendar_attendee_scan.inProgress and calendar_attendee_scan.scanGeneration == scan_generation then
+        complete_calendar_attendee_scan()
+      end
+    end)
+  end
+
   process_next_calendar_attendee_event()
 end
 
