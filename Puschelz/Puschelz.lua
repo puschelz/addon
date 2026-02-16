@@ -1,6 +1,6 @@
 local ADDON_NAME = ...
 
-local SCHEMA_VERSION = 13
+local SCHEMA_VERSION = 14
 local GUILD_BANK_SLOTS_PER_TAB = 98
 local CALENDAR_MONTH_OFFSETS = { -1, 0, 1, 2 }
 
@@ -185,6 +185,137 @@ local function normalize_end_time(start_ms, end_ms, event_type, duration_minutes
 
   local fallback_minutes = get_fallback_event_minutes(event_type, duration_minutes)
   return start_ms + (fallback_minutes * 60 * 1000)
+end
+
+local function map_calendar_invite_status(invite_status)
+  if invite_status == nil then
+    return nil
+  end
+
+  local status_number = tonumber(invite_status)
+  if status_number then
+    if status_number == 8 then
+      return "tentative"
+    end
+
+    if status_number == 1 or status_number == 3 or status_number == 6 then
+      return "signedUp"
+    end
+
+    return nil
+  end
+
+  local status_text = string.lower(tostring(invite_status))
+  if status_text == "" then
+    return nil
+  end
+
+  if status_text:find("tentative", 1, true) then
+    return "tentative"
+  end
+
+  if status_text:find("declin", 1, true)
+    or status_text:find("standby", 1, true)
+    or status_text:find("notsigned", 1, true)
+    or status_text:find("invited", 1, true)
+    or status_text == "out"
+  then
+    return nil
+  end
+
+  if status_text:find("signed", 1, true)
+    or status_text:find("signup", 1, true)
+    or status_text:find("available", 1, true)
+    or status_text:find("confirm", 1, true)
+    or status_text:find("accept", 1, true)
+  then
+    return "signedUp"
+  end
+
+  return nil
+end
+
+local function get_calendar_invite_count()
+  if not C_Calendar then
+    return 0
+  end
+
+  if C_Calendar.EventGetNumInvites then
+    return C_Calendar.EventGetNumInvites() or 0
+  end
+
+  if C_Calendar.GetNumInvites then
+    return C_Calendar.GetNumInvites() or 0
+  end
+
+  return 0
+end
+
+local function get_calendar_invite_details(invite_index)
+  if not C_Calendar then
+    return nil, nil
+  end
+
+  if C_Calendar.EventGetInvite then
+    local first, second = C_Calendar.EventGetInvite(invite_index)
+    if type(first) == "table" then
+      return first.name, first.inviteStatus or first.status
+    end
+
+    if type(first) == "string" then
+      return first, second
+    end
+  end
+
+  if C_Calendar.GetInvite then
+    local name, _, _, _, invite_status = C_Calendar.GetInvite(invite_index)
+    return name, invite_status
+  end
+
+  return nil, nil
+end
+
+local function build_raid_event_attendees(month_offset, month_day, event_index)
+  if not C_Calendar or not C_Calendar.OpenEvent then
+    return nil
+  end
+
+  C_Calendar.OpenEvent(month_offset, month_day, event_index)
+  local invite_count = get_calendar_invite_count()
+  local attendees = {}
+  local seen = {}
+
+  for invite_index = 1, invite_count do
+    local invite_name, invite_status = get_calendar_invite_details(invite_index)
+    local mapped_status = map_calendar_invite_status(invite_status)
+    if mapped_status then
+      local display_name = type(invite_name) == "string" and invite_name:match("^%s*(.-)%s*$") or nil
+      if display_name and display_name ~= "" then
+        local attendee_key = string.lower(display_name)
+        if not seen[attendee_key] then
+          seen[attendee_key] = true
+          table.insert(attendees, {
+            name = display_name,
+            status = mapped_status,
+          })
+        end
+      end
+    end
+  end
+
+  if C_Calendar.CloseEvent then
+    C_Calendar.CloseEvent()
+  end
+
+  table.sort(attendees, function(a, b)
+    return string.lower(a.name) < string.lower(b.name)
+  end)
+
+  if #attendees == 0 then
+    return nil
+  end
+
+  return attendees
 end
 
 local function ensure_db()
@@ -382,13 +513,22 @@ local function build_calendar_payload()
 
                 if not seen[dedupe_key] then
                   seen[dedupe_key] = true
-                  table.insert(events, {
+                  local event_payload = {
                     wowEventId = wow_event_id,
                     title = title,
                     eventType = event_type,
                     startTime = start_ms,
                     endTime = end_ms,
-                  })
+                  }
+
+                  if event_type == "raid" then
+                    local attendees = build_raid_event_attendees(month_offset, month_day, event_index)
+                    if attendees then
+                      event_payload.attendees = attendees
+                    end
+                  end
+
+                  table.insert(events, event_payload)
                 end
               end
             end
