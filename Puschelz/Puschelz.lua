@@ -275,12 +275,7 @@ local function get_calendar_invite_details(invite_index)
   return nil, nil
 end
 
-local function build_raid_event_attendees(month_offset, month_day, event_index)
-  if not C_Calendar or not C_Calendar.OpenEvent then
-    return nil
-  end
-
-  C_Calendar.OpenEvent(month_offset, month_day, event_index)
+local function collect_open_calendar_event_attendees()
   local invite_count = get_calendar_invite_count()
   local attendees = {}
   local seen = {}
@@ -303,10 +298,6 @@ local function build_raid_event_attendees(month_offset, month_day, event_index)
     end
   end
 
-  if C_Calendar.CloseEvent then
-    C_Calendar.CloseEvent()
-  end
-
   table.sort(attendees, function(a, b)
     return string.lower(a.name) < string.lower(b.name)
   end)
@@ -317,6 +308,13 @@ local function build_raid_event_attendees(month_offset, month_day, event_index)
 
   return attendees
 end
+
+local calendar_attendee_scan = {
+  inProgress = false,
+  events = nil,
+  pendingRaidEvents = {},
+  activeRaidEvent = nil,
+}
 
 local function ensure_db()
   if type(PuschelzDB) ~= "table" then
@@ -455,6 +453,7 @@ end
 local function build_calendar_payload()
   local events = {}
   local seen = {}
+  local pending_raid_events = {}
 
   for _, month_offset in ipairs(CALENDAR_MONTH_OFFSETS) do
     local month_info = C_Calendar.GetMonthInfo(month_offset)
@@ -522,10 +521,12 @@ local function build_calendar_payload()
                   }
 
                   if event_type == "raid" then
-                    local attendees = build_raid_event_attendees(month_offset, month_day, event_index)
-                    if attendees then
-                      event_payload.attendees = attendees
-                    end
+                    table.insert(pending_raid_events, {
+                      monthOffset = month_offset,
+                      monthDay = month_day,
+                      eventIndex = event_index,
+                      eventPayload = event_payload,
+                    })
                   end
 
                   table.insert(events, event_payload)
@@ -545,16 +546,110 @@ local function build_calendar_payload()
     return a.startTime < b.startTime
   end)
 
-  return events
+  return events, pending_raid_events
+end
+
+local function finalize_calendar_capture(events)
+  ensure_db()
+  PuschelzDB.calendar.events = events or {}
+  PuschelzDB.calendar.lastScannedAt = now_epoch_ms()
+  PuschelzDB.updatedAt = PuschelzDB.calendar.lastScannedAt
+end
+
+local function reset_calendar_attendee_scan_state()
+  calendar_attendee_scan.inProgress = false
+  calendar_attendee_scan.events = nil
+  calendar_attendee_scan.pendingRaidEvents = {}
+  calendar_attendee_scan.activeRaidEvent = nil
+end
+
+local function complete_calendar_attendee_scan()
+  local events = calendar_attendee_scan.events or {}
+  reset_calendar_attendee_scan_state()
+  finalize_calendar_capture(events)
+end
+
+local function process_next_calendar_attendee_event()
+  if not calendar_attendee_scan.inProgress then
+    return
+  end
+
+  if not C_Calendar or not C_Calendar.OpenEvent then
+    complete_calendar_attendee_scan()
+    return
+  end
+
+  local next_raid_event = table.remove(calendar_attendee_scan.pendingRaidEvents, 1)
+  if not next_raid_event then
+    complete_calendar_attendee_scan()
+    return
+  end
+
+  calendar_attendee_scan.activeRaidEvent = next_raid_event
+  C_Calendar.OpenEvent(
+    next_raid_event.monthOffset,
+    next_raid_event.monthDay,
+    next_raid_event.eventIndex
+  )
+end
+
+local function calendar_open_event_matches_active(active_raid_event, month_offset, month_day, event_index)
+  if type(month_offset) ~= "number" then
+    return true
+  end
+
+  if type(month_day) ~= "number" or type(event_index) ~= "number" then
+    return true
+  end
+
+  return active_raid_event.monthOffset == month_offset
+    and active_raid_event.monthDay == month_day
+    and active_raid_event.eventIndex == event_index
+end
+
+local function on_calendar_open_event(month_offset, month_day, event_index)
+  if not calendar_attendee_scan.inProgress then
+    return
+  end
+
+  local active_raid_event = calendar_attendee_scan.activeRaidEvent
+  if not active_raid_event then
+    return
+  end
+
+  if not calendar_open_event_matches_active(active_raid_event, month_offset, month_day, event_index) then
+    return
+  end
+
+  local attendees = collect_open_calendar_event_attendees()
+  if attendees then
+    active_raid_event.eventPayload.attendees = attendees
+  end
+
+  if C_Calendar and C_Calendar.CloseEvent then
+    C_Calendar.CloseEvent()
+  end
+
+  calendar_attendee_scan.activeRaidEvent = nil
+  process_next_calendar_attendee_event()
 end
 
 local function capture_calendar()
-  ensure_db()
+  if calendar_attendee_scan.inProgress then
+    return
+  end
 
-  local events = build_calendar_payload()
-  PuschelzDB.calendar.events = events
-  PuschelzDB.calendar.lastScannedAt = now_epoch_ms()
-  PuschelzDB.updatedAt = PuschelzDB.calendar.lastScannedAt
+  local events, pending_raid_events = build_calendar_payload()
+  if #pending_raid_events == 0 then
+    finalize_calendar_capture(events)
+    return
+  end
+
+  calendar_attendee_scan.inProgress = true
+  calendar_attendee_scan.events = events
+  calendar_attendee_scan.pendingRaidEvents = pending_raid_events
+  calendar_attendee_scan.activeRaidEvent = nil
+  process_next_calendar_attendee_event()
 end
 
 local function request_calendar_scan()
@@ -1177,6 +1272,7 @@ frame:RegisterEvent("PLAYER_GUILD_UPDATE")
 frame:RegisterEvent("GUILDBANKFRAME_OPENED")
 frame:RegisterEvent("GUILDBANKBAGSLOTS_CHANGED")
 frame:RegisterEvent("CALENDAR_UPDATE_EVENT_LIST")
+frame:RegisterEvent("CALENDAR_OPEN_EVENT")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:RegisterEvent("GROUP_ROSTER_UPDATE")
 frame:RegisterEvent("CHAT_MSG_ADDON")
@@ -1209,8 +1305,15 @@ frame:SetScript("OnEvent", function(_, event, ...)
     return
   end
 
+  if event == "CALENDAR_OPEN_EVENT" then
+    on_calendar_open_event(...)
+    return
+  end
+
   if event == "CALENDAR_UPDATE_EVENT_LIST" then
-    capture_calendar()
+    if not calendar_attendee_scan.inProgress then
+      capture_calendar()
+    end
     return
   end
 
