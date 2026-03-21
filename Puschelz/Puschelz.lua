@@ -34,6 +34,7 @@ local RAID_ROSTER_DEBOUNCE_SEC = 1.0
 local RAID_STATUS_ROW_COUNT = 40
 local CALENDAR_ATTENDEE_SCAN_TIMEOUT_SEC = 45
 local CALENDAR_ATTENDEE_EVENT_OPEN_TIMEOUT_SEC = 1.5
+local GUILD_ORDER_SYNC_TIMEOUT_SEC = 45
 
 local raid_status = {
   roster = {},
@@ -1070,8 +1071,18 @@ local function begin_full_guild_order_sync(notify_on_completion)
   guild_order_sync.notifyOnCompletion = notify_on_completion == true
   guild_order_sync.requestGeneration = guild_order_sync.requestGeneration + 1
   guild_order_sync.collectedByOrderId = {}
+  local generation = guild_order_sync.requestGeneration
   set_guild_order_sync_button_busy(true)
-  request_full_guild_order_sync_page(0, guild_order_sync.requestGeneration)
+
+  if C_Timer and C_Timer.After then
+    C_Timer.After(GUILD_ORDER_SYNC_TIMEOUT_SEC, function()
+      if guild_order_sync.active and guild_order_sync.requestGeneration == generation then
+        finalize_full_guild_order_sync(guild_order_sync.notifyOnCompletion)
+      end
+    end)
+  end
+
+  request_full_guild_order_sync_page(0, generation)
 end
 
 local function current_character_knows_spell(spell_id)
