@@ -987,6 +987,11 @@ local function capture_visible_guild_orders(notify_on_completion)
     return false
   end
 
+  ensure_db()
+  if #orders == 0 and #(PuschelzDB.guildOrders.orders or {}) > 0 then
+    return false
+  end
+
   finalize_guild_orders_capture(orders)
   if notify_on_completion then
     print(string.format("Puschelz: captured %d visible guild order(s).", #orders))
