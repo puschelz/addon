@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 14,
+  "schemaVersion": 15,
   "updatedAt": 1739400000000,
   "player": {
     "characterName": "Fluffybear",
@@ -59,6 +59,28 @@
         "eventType": "world",
         "startTime": 1739600000000,
         "endTime": 1739686400000
+      }
+    ]
+  },
+  "guildOrders": {
+    "lastScannedAt": 1739407200000,
+    "orders": [
+      {
+        "orderId": 12345,
+        "itemId": 225646,
+        "spellId": 447379,
+        "orderType": "guild",
+        "orderState": 2,
+        "expirationTime": 1739493600000,
+        "minQuality": 3,
+        "tipAmount": 150000,
+        "consortiumCut": 0,
+        "isRecraft": false,
+        "isFulfillable": true,
+        "reagentState": 0,
+        "customerName": "Requester-Blackhand",
+        "customerNotes": "Need for raid",
+        "outputItemHyperlink": "|cff0070dd|Hitem:225646::::::::80:::::|h[Blessed Weapon Grip]|h|r"
       }
     ]
   }
