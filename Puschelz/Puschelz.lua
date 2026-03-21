@@ -333,6 +333,8 @@ local guild_order_sync = {
   collectedByOrderId = {},
   profession = nil,
   buttons = {},
+  professionsFrameHooked = false,
+  customerOrdersHooked = false,
 }
 
 local function ensure_db()
@@ -1105,6 +1107,144 @@ local function set_guild_order_sync_button_busy(is_busy)
   end
 end
 
+local refresh_guild_order_sync_buttons
+local schedule_passive_guild_order_capture
+
+local function customer_orders_mode_orders()
+  if type(ProfessionsCustomerOrdersMode) == "table" then
+    return ProfessionsCustomerOrdersMode.Orders
+  end
+
+  return nil
+end
+
+local function is_customer_my_orders_view_active(frame)
+  if type(frame) ~= "table" or not frame.IsShown or not frame:IsShown() then
+    return false
+  end
+
+  if type(frame.Form) == "table" and frame.Form.IsShown and frame.Form:IsShown() then
+    return false
+  end
+
+  if type(frame.MyOrdersPage) == "table" and frame.MyOrdersPage.IsShown and frame.MyOrdersPage:IsShown() then
+    return true
+  end
+
+  if frame.currentPage and frame.currentPage == frame.MyOrdersPage then
+    return true
+  end
+
+  local orders_mode = customer_orders_mode_orders()
+  if orders_mode ~= nil and frame.currentPage and frame.currentPage.mode == orders_mode then
+    return true
+  end
+
+  return false
+end
+
+local function is_crafter_orders_view_active(frame)
+  if type(frame) ~= "table" or not frame.IsShown or not frame:IsShown() then
+    return false
+  end
+
+  if type(frame.GetTab) == "function" and type(frame.craftingOrdersTabID) == "number" then
+    local current_tab = frame:GetTab()
+    if current_tab == frame.craftingOrdersTabID then
+      return true
+    end
+  end
+
+  if type(frame.OrdersPage) == "table" and frame.OrdersPage.IsShown and frame.OrdersPage:IsShown() then
+    return true
+  end
+
+  return false
+end
+
+local function should_show_guild_order_sync_button(host_frame)
+  if host_frame == ProfessionsCustomerOrdersFrame then
+    return is_customer_my_orders_view_active(host_frame)
+  end
+
+  return is_crafter_orders_view_active(host_frame)
+end
+
+local function is_any_guild_order_view_active()
+  return should_show_guild_order_sync_button(ProfessionsFrame)
+    or should_show_guild_order_sync_button(TradeSkillFrame)
+    or should_show_guild_order_sync_button(ProfessionsCustomerOrdersFrame)
+end
+
+local function anchor_guild_order_sync_button(button, host_frame)
+  button:ClearAllPoints()
+  button:SetPoint("TOP", host_frame, "TOP", 0, -28)
+end
+
+local function install_guild_order_sync_hooks()
+  if not guild_order_sync.professionsFrameHooked
+    and type(ProfessionsFrame) == "table"
+    and hooksecurefunc
+    and type(ProfessionsFrame.SetTab) == "function"
+  then
+    hooksecurefunc(ProfessionsFrame, "SetTab", function(frame, tab_id)
+      refresh_guild_order_sync_buttons()
+
+      if type(frame) == "table"
+        and type(frame.craftingOrdersTabID) == "number"
+        and tab_id == frame.craftingOrdersTabID
+      then
+        schedule_passive_guild_order_capture()
+      end
+    end)
+
+    guild_order_sync.professionsFrameHooked = true
+  end
+
+  if not guild_order_sync.customerOrdersHooked
+    and type(ProfessionsCustomerOrdersFrame) == "table"
+    and hooksecurefunc
+  then
+    if type(ProfessionsCustomerOrdersFrame.SelectMode) == "function" then
+      hooksecurefunc(ProfessionsCustomerOrdersFrame, "SelectMode", function(_, mode)
+        refresh_guild_order_sync_buttons()
+
+        if mode == customer_orders_mode_orders() then
+          schedule_passive_guild_order_capture()
+        end
+      end)
+    end
+
+    if type(ProfessionsCustomerOrdersFrame.ShowCurrentPage) == "function" then
+      hooksecurefunc(ProfessionsCustomerOrdersFrame, "ShowCurrentPage", function()
+        refresh_guild_order_sync_buttons()
+
+        if is_customer_my_orders_view_active(ProfessionsCustomerOrdersFrame) then
+          schedule_passive_guild_order_capture()
+        end
+      end)
+    end
+
+    if type(ProfessionsCustomerOrdersFrame.Form) == "table"
+      and type(ProfessionsCustomerOrdersFrame.Form.HookScript) == "function"
+    then
+      ProfessionsCustomerOrdersFrame.Form:HookScript("OnShow", function()
+        refresh_guild_order_sync_buttons()
+      end)
+
+      ProfessionsCustomerOrdersFrame.Form:HookScript("OnHide", function()
+        refresh_guild_order_sync_buttons()
+
+        if is_customer_my_orders_view_active(ProfessionsCustomerOrdersFrame) then
+          schedule_passive_guild_order_capture()
+        end
+      end)
+    end
+
+    guild_order_sync.customerOrdersHooked = true
+  end
+end
+
 local function reset_full_guild_order_sync_state()
   guild_order_sync.active = false
   guild_order_sync.notifyOnCompletion = false
@@ -1357,11 +1497,13 @@ local function get_professions_host_frames()
 end
 
 local function ensure_guild_order_sync_buttons()
+  install_guild_order_sync_hooks()
+
   for _, host_frame in ipairs(get_professions_host_frames()) do
     if not guild_order_sync.buttons[host_frame] then
       local button = CreateFrame("Button", nil, host_frame, "UIPanelButtonTemplate")
       button:SetSize(140, 22)
-      button:SetPoint("TOPRIGHT", host_frame, "TOPRIGHT", -36, -28)
+      anchor_guild_order_sync_button(button, host_frame)
       button:SetText("Sync Guild Orders")
       button:SetScript("OnClick", function()
         begin_full_guild_order_sync(true)
@@ -1370,20 +1512,42 @@ local function ensure_guild_order_sync_buttons()
     end
   end
 
+  refresh_guild_order_sync_buttons()
   set_guild_order_sync_button_busy(guild_order_sync.active)
 end
 
-local function schedule_passive_guild_order_capture()
+refresh_guild_order_sync_buttons = function()
+  for host_frame, button in pairs(guild_order_sync.buttons) do
+    if should_show_guild_order_sync_button(host_frame) then
+      anchor_guild_order_sync_button(button, host_frame)
+      button:Show()
+    else
+      button:Hide()
+    end
+  end
+end
+
+schedule_passive_guild_order_capture = function()
   ensure_guild_order_sync_buttons()
+
+  if not is_any_guild_order_view_active() then
+    return
+  end
 
   if C_Timer and C_Timer.After then
     C_Timer.After(0.5, function()
       ensure_guild_order_sync_buttons()
-      capture_visible_guild_orders(false)
+
+      if is_any_guild_order_view_active() then
+        capture_visible_guild_orders(false)
+      end
     end)
   else
     ensure_guild_order_sync_buttons()
-    capture_visible_guild_orders(false)
+
+    if is_any_guild_order_view_active() then
+      capture_visible_guild_orders(false)
+    end
   end
 end
 
