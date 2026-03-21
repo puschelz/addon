@@ -1,8 +1,12 @@
 local ADDON_NAME = ...
 
-local SCHEMA_VERSION = 14
+local SCHEMA_VERSION = 15
 local GUILD_BANK_SLOTS_PER_TAB = 98
 local CALENDAR_MONTH_OFFSETS = { -1, 0, 1, 2 }
+local GUILD_ORDER_TYPE_GUILD = 1
+local GUILD_ORDER_STATE_FULFILLED = 11
+local GUILD_ORDER_STATE_CANCELED = 13
+local GUILD_ORDER_STATE_EXPIRED = 15
 
 local function resolve_addon_version()
   local version
@@ -321,6 +325,14 @@ local calendar_attendee_scan = {
   notifyOnCompletion = false,
 }
 
+local guild_order_sync = {
+  active = false,
+  notifyOnCompletion = false,
+  requestGeneration = 0,
+  collectedByOrderId = {},
+  button = nil,
+}
+
 local function ensure_db()
   if type(PuschelzDB) ~= "table" then
     PuschelzDB = {}
@@ -348,6 +360,13 @@ local function ensure_db()
   end
   if type(PuschelzDB.calendar.events) ~= "table" then
     PuschelzDB.calendar.events = {}
+  end
+
+  if type(PuschelzDB.guildOrders) ~= "table" then
+    PuschelzDB.guildOrders = {}
+  end
+  if type(PuschelzDB.guildOrders.orders) ~= "table" then
+    PuschelzDB.guildOrders.orders = {}
   end
 end
 
@@ -819,6 +838,354 @@ local function request_calendar_scan(notify_on_completion)
   end
   C_Calendar.OpenCalendar()
   capture_calendar(notify_on_completion)
+end
+
+local function trim_string(value)
+  if type(value) ~= "string" then
+    return nil
+  end
+
+  local trimmed = value:match("^%s*(.-)%s*$")
+  if trimmed == "" then
+    return nil
+  end
+
+  return trimmed
+end
+
+local function sorted_guild_orders_from_map(order_map)
+  local orders = {}
+  for _, order in pairs(order_map or {}) do
+    table.insert(orders, order)
+  end
+
+  table.sort(orders, function(a, b)
+    local expiration_a = tonumber(a.expirationTime) or 0
+    local expiration_b = tonumber(b.expirationTime) or 0
+    if expiration_a == expiration_b then
+      return (tonumber(a.orderId) or 0) < (tonumber(b.orderId) or 0)
+    end
+    return expiration_a < expiration_b
+  end)
+
+  return orders
+end
+
+local function guild_order_is_open(order)
+  if type(order) ~= "table" then
+    return false
+  end
+
+  local order_state = tonumber(order.orderState)
+  if order_state == GUILD_ORDER_STATE_FULFILLED
+    or order_state == GUILD_ORDER_STATE_CANCELED
+    or order_state == GUILD_ORDER_STATE_EXPIRED
+  then
+    return false
+  end
+
+  local expiration_time = tonumber(order.expirationTime)
+  if expiration_time and expiration_time > 0 and expiration_time <= now_epoch_ms() then
+    return false
+  end
+
+  return true
+end
+
+local function normalize_guild_order(raw_order)
+  if type(raw_order) ~= "table" then
+    return nil
+  end
+
+  local order_type = tonumber(raw_order.orderType)
+  if order_type ~= GUILD_ORDER_TYPE_GUILD then
+    return nil
+  end
+
+  local order_id = tonumber(raw_order.orderID or raw_order.orderId)
+  local item_id = tonumber(raw_order.itemID or raw_order.itemId)
+  local spell_id = tonumber(raw_order.spellID or raw_order.spellId)
+  local order_state = tonumber(raw_order.orderState)
+  local expiration_time = tonumber(raw_order.expirationTime)
+  if not order_id or not item_id or not spell_id or not order_state or not expiration_time then
+    return nil
+  end
+
+  return {
+    orderId = order_id,
+    itemId = item_id,
+    spellId = spell_id,
+    orderType = "guild",
+    orderState = order_state,
+    expirationTime = expiration_time,
+    claimEndTime = tonumber(raw_order.claimEndTime) or nil,
+    minQuality = tonumber(raw_order.minQuality) or nil,
+    tipAmount = tonumber(raw_order.tipAmount) or nil,
+    consortiumCut = tonumber(raw_order.consortiumCut) or nil,
+    isRecraft = raw_order.isRecraft == true,
+    isFulfillable = raw_order.isFulfillable == true,
+    reagentState = tonumber(raw_order.reagentState) or nil,
+    customerGuid = trim_string(raw_order.customerGuid),
+    customerName = trim_string(raw_order.customerName),
+    crafterGuid = trim_string(raw_order.crafterGuid),
+    crafterName = trim_string(raw_order.crafterName),
+    customerNotes = trim_string(raw_order.customerNotes),
+    outputItemHyperlink = trim_string(raw_order.outputItemHyperlink),
+    recraftItemHyperlink = trim_string(raw_order.recraftItemHyperlink),
+  }
+end
+
+local function finalize_guild_orders_capture(orders)
+  ensure_db()
+  PuschelzDB.guildOrders.orders = orders or {}
+  PuschelzDB.guildOrders.lastScannedAt = now_epoch_ms()
+  PuschelzDB.updatedAt = PuschelzDB.guildOrders.lastScannedAt
+end
+
+local function collect_visible_guild_orders()
+  if not C_CraftingOrders or not C_CraftingOrders.GetCrafterOrders then
+    return nil
+  end
+
+  local raw_orders = C_CraftingOrders.GetCrafterOrders()
+  if type(raw_orders) ~= "table" then
+    return {}
+  end
+
+  local by_order_id = {}
+  for _, raw_order in ipairs(raw_orders) do
+    local normalized = normalize_guild_order(raw_order)
+    if normalized then
+      by_order_id[normalized.orderId] = normalized
+    end
+  end
+
+  return sorted_guild_orders_from_map(by_order_id)
+end
+
+local function capture_visible_guild_orders(notify_on_completion)
+  if guild_order_sync.active then
+    return false
+  end
+
+  local orders = collect_visible_guild_orders()
+  if not orders then
+    return false
+  end
+
+  finalize_guild_orders_capture(orders)
+  if notify_on_completion then
+    print(string.format("Puschelz: captured %d visible guild order(s).", #orders))
+  end
+  return true
+end
+
+local function set_guild_order_sync_button_busy(is_busy)
+  if not guild_order_sync.button then
+    return
+  end
+
+  guild_order_sync.button:SetEnabled(not is_busy)
+  guild_order_sync.button:SetText(is_busy and "Syncing..." or "Sync Guild Orders")
+end
+
+local function finalize_full_guild_order_sync(notify_on_completion)
+  local orders = sorted_guild_orders_from_map(guild_order_sync.collectedByOrderId)
+  finalize_guild_orders_capture(orders)
+  guild_order_sync.active = false
+  guild_order_sync.notifyOnCompletion = false
+  guild_order_sync.collectedByOrderId = {}
+  set_guild_order_sync_button_busy(false)
+
+  if notify_on_completion then
+    print(string.format("Puschelz: full guild order sync complete (%d order(s)).", #orders))
+  end
+end
+
+local function request_full_guild_order_sync_page(offset, generation)
+  if not guild_order_sync.active or guild_order_sync.requestGeneration ~= generation then
+    return
+  end
+
+  if not C_CraftingOrders or not C_CraftingOrders.RequestCrafterOrders then
+    guild_order_sync.active = false
+    guild_order_sync.notifyOnCompletion = false
+    guild_order_sync.collectedByOrderId = {}
+    set_guild_order_sync_button_busy(false)
+    print("Puschelz: guild order sync is unavailable right now.")
+    return
+  end
+
+  local function handle_result(_, _, _, expect_more_rows, next_offset)
+    if not guild_order_sync.active or guild_order_sync.requestGeneration ~= generation then
+      return
+    end
+
+    local orders = collect_visible_guild_orders()
+    if orders then
+      for _, order in ipairs(orders) do
+        guild_order_sync.collectedByOrderId[order.orderId] = order
+      end
+    end
+
+    if expect_more_rows and type(next_offset) == "number" then
+      request_full_guild_order_sync_page(next_offset, generation)
+      return
+    end
+
+    finalize_full_guild_order_sync(guild_order_sync.notifyOnCompletion)
+  end
+
+  local callback = handle_result
+  if C_FunctionContainers and C_FunctionContainers.CreateCallback then
+    callback = C_FunctionContainers.CreateCallback(handle_result)
+  end
+
+  local request = {
+    orderType = GUILD_ORDER_TYPE_GUILD,
+    searchFavorites = false,
+    initialNonPublicSearch = true,
+    primarySort = {
+      sortType = (Enum and Enum.CraftingOrderSortType and Enum.CraftingOrderSortType.TimeRemaining) or 6,
+      reversed = false,
+    },
+    secondarySort = {
+      sortType = (Enum and Enum.CraftingOrderSortType and Enum.CraftingOrderSortType.ItemName) or 0,
+      reversed = false,
+    },
+    forCrafter = true,
+    offset = offset or 0,
+    callback = callback,
+  }
+
+  C_CraftingOrders.RequestCrafterOrders(request)
+end
+
+local function begin_full_guild_order_sync(notify_on_completion)
+  if guild_order_sync.active then
+    return
+  end
+
+  guild_order_sync.active = true
+  guild_order_sync.notifyOnCompletion = notify_on_completion == true
+  guild_order_sync.requestGeneration = guild_order_sync.requestGeneration + 1
+  guild_order_sync.collectedByOrderId = {}
+  set_guild_order_sync_button_busy(true)
+  request_full_guild_order_sync_page(0, guild_order_sync.requestGeneration)
+end
+
+local function current_character_knows_spell(spell_id)
+  if type(spell_id) ~= "number" or spell_id <= 0 then
+    return false
+  end
+
+  if IsSpellKnownOrOverridesKnown then
+    return IsSpellKnownOrOverridesKnown(spell_id)
+  end
+
+  if IsPlayerSpell then
+    return IsPlayerSpell(spell_id)
+  end
+
+  if IsSpellKnown then
+    return IsSpellKnown(spell_id)
+  end
+
+  return false
+end
+
+local function copper_to_money_label(copper)
+  copper = tonumber(copper) or 0
+  local gold = math.floor(copper / 10000)
+  local silver = math.floor((copper % 10000) / 100)
+  local remainder = copper % 100
+  local parts = {}
+
+  if gold > 0 then
+    table.insert(parts, tostring(gold) .. "g")
+  end
+  if silver > 0 then
+    table.insert(parts, tostring(silver) .. "s")
+  end
+  if remainder > 0 or #parts == 0 then
+    table.insert(parts, tostring(remainder) .. "c")
+  end
+
+  return table.concat(parts, " ")
+end
+
+local function print_matching_guild_order_reminders()
+  ensure_db()
+  local matching_orders = {}
+
+  for _, order in ipairs(PuschelzDB.guildOrders.orders or {}) do
+    if guild_order_is_open(order) and current_character_knows_spell(tonumber(order.spellId)) then
+      table.insert(matching_orders, order)
+    end
+  end
+
+  if #matching_orders == 0 then
+    return
+  end
+
+  table.sort(matching_orders, function(a, b)
+    return (tonumber(a.orderId) or 0) < (tonumber(b.orderId) or 0)
+  end)
+
+  print(string.format("Puschelz: %d open guild order(s) match this character.", #matching_orders))
+  for _, order in ipairs(matching_orders) do
+    local item_name = parse_item_name(order.outputItemHyperlink or order.recraftItemHyperlink)
+      or ("Item " .. tostring(order.itemId or "?"))
+    local quality_text = ""
+    if tonumber(order.minQuality) and tonumber(order.minQuality) > 0 then
+      quality_text = string.format(" q%d", tonumber(order.minQuality))
+    end
+    local tip_text = ""
+    if tonumber(order.tipAmount) and tonumber(order.tipAmount) > 0 then
+      tip_text = string.format(" tip %s", copper_to_money_label(order.tipAmount))
+    end
+
+    print(string.format(
+      "Puschelz: open guild order #%d for %s%s%s",
+      tonumber(order.orderId) or 0,
+      item_name,
+      quality_text,
+      tip_text
+    ))
+  end
+end
+
+local function get_professions_host_frame()
+  if type(ProfessionsFrame) == "table" then
+    return ProfessionsFrame
+  end
+
+  if type(TradeSkillFrame) == "table" then
+    return TradeSkillFrame
+  end
+
+  return nil
+end
+
+local function ensure_guild_order_sync_button()
+  if guild_order_sync.button then
+    return
+  end
+
+  local host_frame = get_professions_host_frame()
+  if not host_frame then
+    return
+  end
+
+  local button = CreateFrame("Button", "PuschelzGuildOrderSyncButton", host_frame, "UIPanelButtonTemplate")
+  button:SetSize(140, 22)
+  button:SetPoint("TOPRIGHT", host_frame, "TOPRIGHT", -36, -28)
+  button:SetText("Sync Guild Orders")
+  button:SetScript("OnClick", function()
+    begin_full_guild_order_sync(true)
+  end)
+  guild_order_sync.button = button
+  set_guild_order_sync_button_busy(false)
 end
 
 local function normalized_realm_name()
@@ -1376,17 +1743,21 @@ local function print_status()
 
   local bank_tabs = PuschelzDB.guildBank.tabs or {}
   local calendar_events = PuschelzDB.calendar.events or {}
+  local guild_orders = PuschelzDB.guildOrders.orders or {}
 
   local bank_scan = PuschelzDB.guildBank.lastScannedAt
   local calendar_scan = PuschelzDB.calendar.lastScannedAt
+  local guild_order_scan = PuschelzDB.guildOrders.lastScannedAt
 
   print(
     string.format(
-      "Puschelz: tabs=%d, events=%d, bankScan=%s, calendarScan=%s",
+      "Puschelz: tabs=%d, events=%d, guildOrders=%d, bankScan=%s, calendarScan=%s, guildOrderScan=%s",
       #bank_tabs,
       #calendar_events,
+      #guild_orders,
       bank_scan and date("%Y-%m-%d %H:%M", math.floor(bank_scan / 1000)) or "never",
-      calendar_scan and date("%Y-%m-%d %H:%M", math.floor(calendar_scan / 1000)) or "never"
+      calendar_scan and date("%Y-%m-%d %H:%M", math.floor(calendar_scan / 1000)) or "never",
+      guild_order_scan and date("%Y-%m-%d %H:%M", math.floor(guild_order_scan / 1000)) or "never"
     )
   )
 end
@@ -1409,6 +1780,16 @@ SlashCmdList.PUSCHELZ = function(msg)
     return
   end
 
+  if command == "orders" then
+    print_matching_guild_order_reminders()
+    return
+  end
+
+  if command == "syncorders" then
+    begin_full_guild_order_sync(true)
+    return
+  end
+
   if command == "check" then
     begin_raid_presence_check("manual")
     return
@@ -1424,12 +1805,13 @@ SlashCmdList.PUSCHELZ = function(msg)
     return
   end
 
-  print("Puschelz usage: /puschelz status | /puschelz scan | /puschelz check | /puschelz raidstatus")
+  print("Puschelz usage: /puschelz status | /puschelz scan | /puschelz orders | /puschelz syncorders | /puschelz check | /puschelz raidstatus")
 end
 
 local frame = CreateFrame("Frame")
 frame:RegisterEvent("PLAYER_LOGIN")
 frame:RegisterEvent("PLAYER_GUILD_UPDATE")
+frame:RegisterEvent("TRADE_SKILL_SHOW")
 frame:RegisterEvent("GUILDBANKFRAME_OPENED")
 frame:RegisterEvent("GUILDBANKBAGSLOTS_CHANGED")
 frame:RegisterEvent("CALENDAR_UPDATE_EVENT_LIST")
@@ -1445,6 +1827,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
     ensure_db()
     refresh_player_metadata()
     request_calendar_scan(false)
+    print_matching_guild_order_reminders()
     seed_raid_random_delay()
     register_raid_status_prefix()
     schedule_group_roster_update()
@@ -1459,6 +1842,18 @@ frame:SetScript("OnEvent", function(_, event, ...)
   if event == "GUILDBANKFRAME_OPENED" then
     queue_all_bank_tabs()
     query_next_bank_tab()
+    return
+  end
+
+  if event == "TRADE_SKILL_SHOW" then
+    ensure_guild_order_sync_button()
+    if C_Timer and C_Timer.After then
+      C_Timer.After(0.5, function()
+        capture_visible_guild_orders(false)
+      end)
+    else
+      capture_visible_guild_orders(false)
+    end
     return
   end
 

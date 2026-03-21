@@ -1,6 +1,6 @@
-# Puschelz WoW Addon (V14)
+# Puschelz WoW Addon (V15)
 
-Retail WoW addon that captures guild bank and calendar data and writes it to `SavedVariables/Puschelz.lua`.
+Retail WoW addon that captures guild bank, calendar, and guild-order data and writes it to `SavedVariables/Puschelz.lua`.
 
 ## Install
 
@@ -32,14 +32,19 @@ Then configure a GitHub PAT in WoWUp and retry install/update.
 
 1. Open the guild bank and browse tabs (the addon queues all tabs and captures slot data).
 2. Calendar data is scanned on login and on calendar updates.
-3. Raid addon coverage checks auto-refresh on raid roster changes.
-4. Run `/reload` (or log out) to flush SavedVariables to disk.
-5. Inspect `WTF/Account/<ACCOUNT>/SavedVariables/Puschelz.lua`.
+3. Open the professions crafting-orders UI to passively snapshot currently visible guild orders.
+4. Use the `Sync Guild Orders` button in the professions window to actively request and capture all visible guild orders for the current crafter view.
+5. Matching open guild orders are printed into chat on login for the current character until they disappear from a later open-order scan.
+6. Raid addon coverage checks auto-refresh on raid roster changes.
+7. Run `/reload` (or log out) to flush SavedVariables to disk.
+8. Inspect `WTF/Account/<ACCOUNT>/SavedVariables/Puschelz.lua`.
 
 ## Slash commands
 
 - `/puschelz status` (or `/pz`) shows captured counts and last scan times.
 - `/puschelz scan` triggers a manual bank + calendar scan.
+- `/puschelz orders` reprints open guild-order reminders that match the current character.
+- `/puschelz syncorders` runs a full guild-order sync request.
 - `/puschelz check` triggers a manual raid addon handshake in the current raid (regular or instance raid/LFR).
 - `/puschelz raidstatus` toggles the raid status window (Installed/Missing/Pending + version per raid member).
 
@@ -47,7 +52,7 @@ Then configure a GitHub PAT in WoWUp and retry install/update.
 
 ```lua
 PuschelzDB = {
-  schemaVersion = 14,
+  schemaVersion = 15,
   updatedAt = 1739400000000,
   player = {
     characterName = "Fluffybear",
@@ -97,12 +102,34 @@ PuschelzDB = {
       },
     },
   },
+  guildOrders = {
+    lastScannedAt = 1739407200000,
+    orders = {
+      {
+        orderId = 12345,
+        itemId = 225646,
+        spellId = 447379,
+        orderType = "guild",
+        orderState = 2,
+        expirationTime = 1739493600000,
+        minQuality = 3,
+        tipAmount = 150000,
+        consortiumCut = 0,
+        isRecraft = false,
+        isFulfillable = true,
+        reagentState = 0,
+        customerName = "Requester-Blackhand",
+        customerNotes = "Need for raid",
+        outputItemHyperlink = "|cff0070dd|Hitem:225646::::::::80:::::|h[Blessed Weapon Grip]|h|r",
+      },
+    },
+  },
 }
 ```
 
-The `tabs[*].items[*]`, `calendar.events[*]`, and optional `calendar.events[*].attendees[*]` fields are intentionally aligned to the website backend payload contract used by `/api/addon-sync`.
+The `tabs[*].items[*]`, `calendar.events[*]`, optional `calendar.events[*].attendees[*]`, and `guildOrders.orders[*]` fields are intentionally aligned to the website backend payload contract used by `/api/addon-sync`.
 
-## Parser fixtures (for V14)
+## Parser fixtures (for V15)
 
 - `fixtures/Puschelz.sample.lua`: sample SavedVariables file.
 - `fixtures/Puschelz.sample.expected.json`: expected parsed object for desktop-client tests.
