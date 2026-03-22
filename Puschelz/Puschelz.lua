@@ -346,12 +346,52 @@ local craft_request_bridge = {
   seenBroadcasts = {},
   seenBroadcastCount = 0,
   pendingChunks = {},
+  formInitHooked = false,
+  recipeSelectionHooked = false,
+  selectionGeneration = 0,
+  selectedSpellId = nil,
+  selectedItemId = nil,
+  widgetContainer = nil,
   widget = nil,
   lastWidgetRecipeKey = nil,
   lastWidgetStateKey = nil,
 }
 
 local refresh_place_order_status_widget
+
+local function set_selected_bridge_recipe(spell_id, item_id, source)
+  craft_request_bridge.selectionGeneration = (craft_request_bridge.selectionGeneration or 0) + 1
+  craft_request_bridge.selectedSpellId = tonumber(spell_id)
+  craft_request_bridge.selectedItemId = tonumber(item_id)
+  craft_request_bridge.lastWidgetRecipeKey = nil
+  craft_request_bridge.lastWidgetStateKey = nil
+end
+
+local function schedule_craft_request_widget_refresh()
+  if not refresh_place_order_status_widget then
+    return
+  end
+
+  refresh_place_order_status_widget()
+
+  if not C_Timer or type(C_Timer.After) ~= "function" then
+    return
+  end
+
+  local generation = craft_request_bridge.selectionGeneration or 0
+  local delays = { 0, 0.05, 0.2, 0.5 }
+  for _, delay in ipairs(delays) do
+    C_Timer.After(delay, function()
+      if (craft_request_bridge.selectionGeneration or 0) ~= generation then
+        return
+      end
+
+      if refresh_place_order_status_widget then
+        refresh_place_order_status_widget()
+      end
+    end)
+  end
+end
 
 local function ensure_db()
   if type(PuschelzDB) ~= "table" then
@@ -1221,6 +1261,32 @@ local function install_guild_order_sync_hooks()
     and type(ProfessionsCustomerOrdersFrame) == "table"
     and hooksecurefunc
   then
+    if not craft_request_bridge.formInitHooked
+      and type(ProfessionsCustomerOrdersFrame.Form) == "table"
+      and type(ProfessionsCustomerOrdersFrame.Form.Init) == "function"
+    then
+      hooksecurefunc(ProfessionsCustomerOrdersFrame.Form, "Init", function(_, order)
+        if type(order) == "table" then
+          set_selected_bridge_recipe(order.spellID or order.spellId, order.itemID or order.itemId, "formInit")
+          schedule_craft_request_widget_refresh()
+        end
+      end)
+
+      craft_request_bridge.formInitHooked = true
+    end
+
+    if not craft_request_bridge.recipeSelectionHooked
+      and type(EventRegistry) == "table"
+      and type(EventRegistry.RegisterCallback) == "function"
+    then
+      EventRegistry:RegisterCallback("ProfessionsCustomerOrders.RecipeSelected", function(_, item_id, spell_id)
+        set_selected_bridge_recipe(spell_id, item_id, "recipeSelectedEvent")
+        schedule_craft_request_widget_refresh()
+      end)
+
+      craft_request_bridge.recipeSelectionHooked = true
+    end
+
     if type(ProfessionsCustomerOrdersFrame.SelectMode) == "function" then
       hooksecurefunc(ProfessionsCustomerOrdersFrame, "SelectMode", function(_, mode)
         refresh_guild_order_sync_buttons()
@@ -1246,14 +1312,17 @@ local function install_guild_order_sync_hooks()
     then
       ProfessionsCustomerOrdersFrame.Form:HookScript("OnShow", function()
         refresh_guild_order_sync_buttons()
-        refresh_place_order_status_widget()
+        schedule_craft_request_widget_refresh()
       end)
 
       ProfessionsCustomerOrdersFrame.Form:HookScript("OnHide", function()
         refresh_guild_order_sync_buttons()
+        reset_minimum_quality_status(ProfessionsCustomerOrdersFrame.Form)
         if craft_request_bridge.widget then
           craft_request_bridge.widget:Hide()
         end
+        craft_request_bridge.lastWidgetRecipeKey = nil
+        craft_request_bridge.lastWidgetStateKey = nil
 
         if is_customer_my_orders_view_active(ProfessionsCustomerOrdersFrame) then
           schedule_passive_guild_order_capture()
@@ -1640,7 +1709,74 @@ local function red_chat_message(message)
   print(message)
 end
 
+local function count_table_entries(value)
+  if type(value) ~= "table" then
+    return 0
+  end
+
+  local count = 0
+  for _ in pairs(value) do
+    count = count + 1
+  end
+  return count
+end
+
+local function colorize_status_text(text, color)
+  if type(text) ~= "string" then
+    return ""
+  end
+
+  local red = math.max(0, math.min(255, math.floor(((color and color[1]) or 1) * 255)))
+  local green = math.max(0, math.min(255, math.floor(((color and color[2]) or 1) * 255)))
+  local blue = math.max(0, math.min(255, math.floor(((color and color[3]) or 1) * 255)))
+  return string.format("|cff%02x%02x%02x%s|r", red, green, blue, text)
+end
+
+local function is_addon_loaded_by_name(addon_name)
+  if C_AddOns and C_AddOns.IsAddOnLoaded then
+    return C_AddOns.IsAddOnLoaded(addon_name)
+  end
+
+  if IsAddOnLoaded then
+    return IsAddOnLoaded(addon_name)
+  end
+
+  return false
+end
+
+local function try_load_bridge_addon()
+  local was_loaded = is_addon_loaded_by_name("PuschelzBridge")
+  if was_loaded then
+    return true, "already_loaded"
+  end
+
+  if is_addon_loaded_by_name("PuschelzBridge") then
+    return true, "already_loaded"
+  end
+
+  local loaded, reason
+  if C_AddOns and C_AddOns.LoadAddOn then
+    loaded, reason = C_AddOns.LoadAddOn("PuschelzBridge")
+    if loaded == nil then
+      loaded = is_addon_loaded_by_name("PuschelzBridge")
+    end
+    return loaded and true or false, tostring(reason or "unknown")
+  end
+
+  if LoadAddOn then
+    loaded, reason = LoadAddOn("PuschelzBridge")
+    if loaded == nil then
+      loaded = is_addon_loaded_by_name("PuschelzBridge")
+    end
+    return loaded and true or false, tostring(reason or "unknown")
+  end
+
+  return false, "load_api_unavailable"
+end
+
 local function ensure_bridge_db()
+  ensure_db()
+  local loaded, reason = try_load_bridge_addon()
   if type(PuschelzBridgeDB) ~= "table" then
     PuschelzBridgeDB = {}
   end
@@ -1650,6 +1786,17 @@ local function ensure_bridge_db()
   if type(PuschelzBridgeDB.openRequests) ~= "table" then
     PuschelzBridgeDB.openRequests = {}
   end
+
+  PuschelzDB.bridgeDebug = {
+    loaded = loaded and true or false,
+    loadReason = tostring(reason or "unknown"),
+    addonLoaded = is_addon_loaded_by_name("PuschelzBridge") and true or false,
+    snapshotVersion = tonumber(PuschelzBridgeDB.snapshotVersion),
+    generatedAt = tonumber(PuschelzBridgeDB.generatedAt),
+    recipeCount = count_table_entries(PuschelzBridgeDB.recipesByKey),
+    openRequestCount = type(PuschelzBridgeDB.openRequests) == "table" and #PuschelzBridgeDB.openRequests or 0,
+    updatedAt = now_epoch_ms(),
+  }
 end
 
 local function recipe_bridge_key(spell_id, item_id)
@@ -2065,24 +2212,8 @@ local function resolve_place_order_recipe_context(form)
     return nil, nil
   end
 
-  local candidates = {
-    form,
-    form.transaction,
-    form.order,
-    form.orderInfo,
-    form.recipe,
-    form.recipeInfo,
-    form.currentRecipe,
-    form.currentSchematic,
-    form.SchematicForm,
-    form.Schematic,
-  }
-
-  for _, candidate in ipairs(candidates) do
-    local spell_id, item_id = extract_recipe_context(candidate)
-    if spell_id and item_id then
-      return spell_id, item_id
-    end
+  if craft_request_bridge.selectedSpellId and craft_request_bridge.selectedItemId then
+    return craft_request_bridge.selectedSpellId, craft_request_bridge.selectedItemId
   end
 
   return nil, nil
@@ -2101,11 +2232,17 @@ local function ensure_craft_request_status_widget()
   end
 
   local form = ProfessionsCustomerOrdersFrame.Form
-  local widget = form:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-  widget:SetJustifyH("LEFT")
-  widget:SetWidth(320)
-  widget:SetPoint("TOPLEFT", form, "TOPLEFT", 28, -54)
-  widget:Hide()
+  local container = CreateFrame("Frame", nil, form)
+  container:SetFrameStrata("HIGH")
+  container:SetFrameLevel((form.GetFrameLevel and form:GetFrameLevel() or 0) + 20)
+  container:SetSize(148, 14)
+
+  local widget = container:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  widget:SetJustifyH("RIGHT")
+  widget:SetWidth(148)
+  widget:SetPoint("CENTER", container, "CENTER", 0, 0)
+  container:Hide()
+  craft_request_bridge.widgetContainer = container
   craft_request_bridge.widget = widget
 
   if type(form.HookScript) == "function" then
@@ -2140,13 +2277,136 @@ local function ensure_craft_request_status_widget()
   return widget
 end
 
+local function update_place_order_status_anchor(form, container, visible)
+  if type(form) ~= "table" then
+    return
+  end
+
+  local anchor_to = nil
+  local target_visible = type(form.OrderRecipientTarget) == "table"
+    and type(form.OrderRecipientTarget.IsShown) == "function"
+    and form.OrderRecipientTarget:IsShown()
+
+  if target_visible and type(form.OrderRecipientTarget) == "table" then
+    anchor_to = form.OrderRecipientTarget
+  elseif type(form.OrderRecipientDropdown) == "table" then
+    anchor_to = form.OrderRecipientDropdown
+  end
+
+  if container then
+    container:ClearAllPoints()
+    if anchor_to then
+      container:SetPoint("TOPRIGHT", anchor_to, "BOTTOMRIGHT", 0, -4)
+    else
+      container:SetPoint("TOPRIGHT", form, "TOPRIGHT", -12, -30)
+    end
+  end
+
+  if type(form.MinimumQuality) == "table" and type(form.MinimumQuality.SetPoint) == "function" then
+    if visible and anchor_to then
+      form.MinimumQuality:ClearAllPoints()
+      local y_ofs = target_visible and -12 or -22
+      form.MinimumQuality:SetPoint("TOPRIGHT", anchor_to, "BOTTOMRIGHT", 0, y_ofs)
+    elseif type(form.UpdateMinimumQualityAnchor) == "function" then
+      form:UpdateMinimumQualityAnchor()
+    end
+  end
+end
+
+local function reset_minimum_quality_status(form)
+  if type(form) ~= "table"
+    or type(form.MinimumQuality) ~= "table"
+  then
+    return
+  end
+
+  if type(form.MinimumQuality.SetHeight) == "function" then
+    form.MinimumQuality:SetHeight(20)
+  end
+  if type(form.MinimumQuality.Text) == "table"
+    and type(form.MinimumQuality.Text.SetHeight) == "function"
+  then
+    form.MinimumQuality.Text:SetHeight(20)
+  end
+  if type(form.MinimumQuality.Text) == "table"
+    and type(form.MinimumQuality.Text.SetText) == "function"
+  then
+    form.MinimumQuality.Text:SetText(PROFESSIONS_CRAFTING_FORM_MIN_QUALITY)
+  end
+  if type(form.MinimumQuality.PuschelzStatusText) == "table" then
+    form.MinimumQuality.PuschelzStatusText:Hide()
+  end
+  if type(form.UpdateMinimumQualityAnchor) == "function" then
+    form:UpdateMinimumQualityAnchor()
+  end
+end
+
+local function apply_minimum_quality_status(form, status_text, color)
+  if type(form) ~= "table"
+    or type(form.MinimumQuality) ~= "table"
+    or type(form.MinimumQuality.IsShown) ~= "function"
+    or not form.MinimumQuality:IsShown()
+  then
+    return false
+  end
+
+  if type(form.MinimumQuality.PuschelzStatusText) ~= "table"
+    and type(form.MinimumQuality.CreateFontString) == "function"
+  then
+    local status_font = form.MinimumQuality:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    status_font:SetJustifyH("RIGHT")
+    status_font:SetWidth(250)
+    status_font:SetPoint("TOPRIGHT", form.MinimumQuality.Text or form.MinimumQuality, "BOTTOMRIGHT", 0, 2)
+    form.MinimumQuality.PuschelzStatusText = status_font
+  end
+
+  if type(form.MinimumQuality.SetHeight) == "function" then
+    form.MinimumQuality:SetHeight(32)
+  end
+  if type(form.MinimumQuality.Text) == "table"
+    and type(form.MinimumQuality.Text.SetHeight) == "function"
+  then
+    form.MinimumQuality.Text:SetHeight(20)
+  end
+  if type(form.MinimumQuality.Text) == "table"
+    and type(form.MinimumQuality.Text.SetText) == "function"
+  then
+    form.MinimumQuality.Text:SetText(PROFESSIONS_CRAFTING_FORM_MIN_QUALITY)
+  end
+  if type(form.MinimumQuality.PuschelzStatusText) == "table" then
+    form.MinimumQuality.PuschelzStatusText:SetText(colorize_status_text(status_text, color))
+    form.MinimumQuality.PuschelzStatusText:Show()
+  end
+  if type(form.UpdateMinimumQualityAnchor) == "function" then
+    form:UpdateMinimumQualityAnchor()
+  end
+  return true
+end
+
 refresh_place_order_status_widget = function()
   local widget = ensure_craft_request_status_widget()
+  local container = craft_request_bridge.widgetContainer
   local form = type(ProfessionsCustomerOrdersFrame) == "table" and ProfessionsCustomerOrdersFrame.Form or nil
   if not widget or type(form) ~= "table" or not form.IsShown or not form:IsShown() then
-    if widget then
+    if container then
+      container:Hide()
+    end
+    return
+  end
+
+  local is_personal_order = type(form.OrderRecipientTarget) == "table"
+    and type(form.OrderRecipientTarget.IsShown) == "function"
+    and form.OrderRecipientTarget:IsShown()
+  if is_personal_order then
+    reset_minimum_quality_status(form)
+    update_place_order_status_anchor(form, container, false)
+    if container then
+      container:Hide()
+    else
       widget:Hide()
     end
+    craft_request_bridge.lastWidgetRecipeKey = nil
+    craft_request_bridge.lastWidgetStateKey = nil
     return
   end
 
@@ -2158,37 +2418,66 @@ refresh_place_order_status_widget = function()
   local text = nil
   local color = { 1, 0.82, 0.3 }
   if not PuschelzBridgeDB.snapshotVersion then
-    text = "Puschelz: no bridge data loaded yet."
+    text = "No data"
   elseif key and type(PuschelzBridgeDB.recipesByKey[key]) == "table" then
     local recipe_entry = PuschelzBridgeDB.recipesByKey[key]
-    text = string.format(
-      "Puschelz: guild can fulfill this craft (%d).",
-      tonumber(recipe_entry.crafterCount) or 0
-    )
+    local crafter_count = tonumber(recipe_entry.crafterCount) or 0
+    text = string.format("Guild craftable (%d)", crafter_count)
     color = { 0.3, 1, 0.4 }
     state_key = key .. "|yes"
   elseif key then
-    text = "Puschelz: no guild crafter match in current data."
+    text = "No guild craft"
     color = { 1, 0.5, 0.5 }
     state_key = key .. "|no"
   end
 
   if not text then
-    widget:Hide()
+    reset_minimum_quality_status(form)
+    update_place_order_status_anchor(form, container, false)
+    if container then
+      container:Hide()
+    else
+      widget:Hide()
+    end
     return
   end
+
+  if apply_minimum_quality_status(form, text, color) then
+    if container then
+      container:Hide()
+    else
+      widget:Hide()
+    end
+    craft_request_bridge.lastWidgetRecipeKey = key
+    craft_request_bridge.lastWidgetStateKey = state_key
+    return
+  end
+
+  reset_minimum_quality_status(form)
 
   if state_key ~= nil
     and craft_request_bridge.lastWidgetStateKey == state_key
     and craft_request_bridge.lastWidgetRecipeKey == key
   then
-    widget:Show()
+    update_place_order_status_anchor(form, container, true)
+    widget:SetText(text)
+    widget:SetTextColor(color[1], color[2], color[3])
+    if container then
+      container:Show()
+    else
+      widget:Show()
+    end
     return
   end
 
   widget:SetText(text)
   widget:SetTextColor(color[1], color[2], color[3])
-  widget:Show()
+  update_place_order_status_anchor(form, container, true)
+  if container then
+    container:Show()
+  else
+    widget:Show()
+  end
   craft_request_bridge.lastWidgetRecipeKey = key
   craft_request_bridge.lastWidgetStateKey = state_key
 end

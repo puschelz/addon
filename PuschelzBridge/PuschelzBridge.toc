@@ -1,6 +1,7 @@
 ## Interface: 110200,120000
 ## Title: PuschelzBridge
 ## Notes: Loads desktop bridge SavedVariables for the Puschelz addon.
+## LoadOnDemand: 1
 ## SavedVariables: PuschelzBridgeDB
 
 PuschelzBridge.lua
