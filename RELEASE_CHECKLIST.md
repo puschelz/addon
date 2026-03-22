@@ -17,7 +17,7 @@ Manual tagging is only needed for backfills, re-cuts, or one-off releases from a
 
 ```bash
 cd /home/nik/workspace/puschelz-addon
-git add Puschelz/Puschelz.toc README.md RELEASE_CHECKLIST.md .pkgmeta Puschelz fixtures
+git add Puschelz/Puschelz.toc PuschelzBridge README.md RELEASE_CHECKLIST.md .pkgmeta .github/workflows Puschelz fixtures
 git commit -m "Release prep vX.Y.Z"
 git push origin main
 ```
@@ -50,8 +50,12 @@ If you are doing a manual backfill or `gh` fails due token/org policy, create th
 ## 4) Validate package
 
 1. Confirm release exists on GitHub.
-2. In WoWUp, refresh/update the addon.
-3. In-game:
+2. Download the release zip and confirm it contains both addon folders at the top level:
+   - `Puschelz/`
+   - `PuschelzBridge/`
+3. In WoWUp, refresh/update the addon.
+4. In-game:
    - `/pz status`
    - open guild bank + `/reload`
-   - confirm `WTF/Account/<ACCOUNT>/SavedVariables/Puschelz.lua` updated.
+   - confirm `WTF/Account/<ACCOUNT>/SavedVariables/Puschelz.lua` updated
+   - confirm `WTF/Account/<ACCOUNT>/SavedVariables/PuschelzBridge.lua` exists after the desktop app refreshes bridge data

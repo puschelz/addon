@@ -78,7 +78,8 @@ jobs:
           NEXT_TAG: ${{ steps.next_tag.outputs.value }}
         run: |
           test -d Puschelz
-          zip -r "Puschelz-${NEXT_TAG}.zip" Puschelz
+          test -d PuschelzBridge
+          zip -r "Puschelz-${NEXT_TAG}.zip" Puschelz PuschelzBridge
 
       - name: Publish GitHub release + asset
         if: steps.existing_tag.outputs.already_tagged != 'true'
@@ -90,4 +91,4 @@ jobs:
           fail_on_unmatched_files: true
           append_body: true
           body: |
-            Automated release asset for WoWUp.
+            Automated bundled release asset for WoWUp. This zip contains both `Puschelz/` and `PuschelzBridge/` and should be installed as one addon package.
