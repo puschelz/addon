@@ -2108,8 +2108,8 @@ local function ensure_craft_request_status_widget()
   widget:Hide()
   craft_request_bridge.widget = widget
 
-  if type(form.SetScript) == "function" then
-    form:SetScript("OnUpdate", function(self, elapsed)
+  if type(form.HookScript) == "function" then
+    form:HookScript("OnUpdate", function(self, elapsed)
       self._puschelzCraftRequestElapsed = (self._puschelzCraftRequestElapsed or 0) + (elapsed or 0)
       if self._puschelzCraftRequestElapsed < 0.25 then
         return
@@ -2117,6 +2117,19 @@ local function ensure_craft_request_status_widget()
       self._puschelzCraftRequestElapsed = 0
       if self.IsShown and self:IsShown() then
         -- refreshed by the helper below; safe to call frequently
+        if refresh_place_order_status_widget then
+          refresh_place_order_status_widget()
+        end
+      end
+    end)
+  elseif type(form.SetScript) == "function" then
+    form:SetScript("OnUpdate", function(self, elapsed)
+      self._puschelzCraftRequestElapsed = (self._puschelzCraftRequestElapsed or 0) + (elapsed or 0)
+      if self._puschelzCraftRequestElapsed < 0.25 then
+        return
+      end
+      self._puschelzCraftRequestElapsed = 0
+      if self.IsShown and self:IsShown() then
         if refresh_place_order_status_widget then
           refresh_place_order_status_widget()
         end
