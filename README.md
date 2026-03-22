@@ -1,20 +1,28 @@
 # Puschelz WoW Addon (V15)
 
-Retail WoW addon that captures guild bank, calendar, and guild-order data and writes it to `SavedVariables/Puschelz.lua`.
+Retail WoW addon bundle for guild sync. The release ships as one user-facing install package, but it contains two addon folders internally:
+
+- `Puschelz/` for in-game data capture and UI
+- `PuschelzBridge/` for desktop-written bridge data
+
+Users should treat this as a single addon install/update source. Do not install `PuschelzBridge` separately.
 
 ## Install
 
-1. Copy `Puschelz/` into your WoW AddOns folder:
+1. Download the published `Puschelz-<version>.zip` release asset.
+2. Extract the zip into your WoW AddOns folder so both folders land side-by-side:
    - `World of Warcraft/_retail_/Interface/AddOns/Puschelz`
-2. Start WoW and enable the addon in the AddOns list.
-3. Log in on a guild character.
+   - `World of Warcraft/_retail_/Interface/AddOns/PuschelzBridge`
+3. Treat that zip as one addon package. Do not install or update `PuschelzBridge` separately.
+4. Start WoW and enable the addon in the AddOns list.
+5. Log in on a guild character.
 
 ## Install via WoWUp
 
 1. Open WoWUp.
 2. Add an addon source from GitHub URL (in most clients this is `Get Addons` -> `Install from URL`).
 3. Paste: `https://github.com/puschelz/puschelz-addon`.
-4. Select the Retail addon entry and install/update normally via WoWUp.
+4. Install/update it as one addon source. The repo/release package contains both `Puschelz` and `PuschelzBridge`, and WoWUp should place both folders for you.
 
 If your WoWUp build does not show `Install from URL`, install from the published GitHub release zip and keep this repo as your update source.
 
@@ -136,7 +144,7 @@ The `tabs[*].items[*]`, `calendar.events[*]`, optional `calendar.events[*].atten
 
 ## Releases
 
-See `RELEASE_CHECKLIST.md` for the repeatable version bump + tag + release flow.
+See `RELEASE_CHECKLIST.md` for the repeatable version bump + tag + release flow. The published release zip is the single user-facing install artifact and must always contain both `Puschelz/` and `PuschelzBridge/`.
 
 ## Interface compatibility
 

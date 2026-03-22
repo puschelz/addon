@@ -26,7 +26,8 @@ jobs:
       - name: Build addon zip
         run: |
           test -d Puschelz
-          zip -r "Puschelz-${GITHUB_REF_NAME}.zip" Puschelz
+          test -d PuschelzBridge
+          zip -r "Puschelz-${GITHUB_REF_NAME}.zip" Puschelz PuschelzBridge
 
       - name: Publish GitHub release + asset
         uses: softprops/action-gh-release@v2
@@ -37,4 +38,4 @@ jobs:
           fail_on_unmatched_files: true
           append_body: true
           body: |
-            Automated release asset for WoWUp.
+            Automated bundled release asset for WoWUp. This zip contains both `Puschelz/` and `PuschelzBridge/` and should be installed as one addon package.
