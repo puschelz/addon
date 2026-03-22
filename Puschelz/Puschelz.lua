@@ -1323,7 +1323,9 @@ local function install_guild_order_sync_hooks()
       ProfessionsCustomerOrdersFrame.Form:HookScript("OnHide", function()
         refresh_guild_order_sync_buttons()
         reset_minimum_quality_status(ProfessionsCustomerOrdersFrame.Form)
-        if craft_request_bridge.widget then
+        if craft_request_bridge.widgetContainer then
+          craft_request_bridge.widgetContainer:Hide()
+        elseif craft_request_bridge.widget then
           craft_request_bridge.widget:Hide()
         end
         craft_request_bridge.lastWidgetRecipeKey = nil
@@ -2483,6 +2485,7 @@ refresh_place_order_status_widget = function()
     widget:SetText(text)
     widget:SetTextColor(color[1], color[2], color[3])
     if container then
+      widget:Show()
       container:Show()
     else
       widget:Show()
@@ -2494,6 +2497,7 @@ refresh_place_order_status_widget = function()
   widget:SetTextColor(color[1], color[2], color[3])
   update_place_order_status_anchor(form, container, true)
   if container then
+    widget:Show()
     container:Show()
   else
     widget:Show()
