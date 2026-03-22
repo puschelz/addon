@@ -358,6 +358,7 @@ local craft_request_bridge = {
 }
 
 local refresh_place_order_status_widget
+local reset_minimum_quality_status
 
 local function set_selected_bridge_recipe(spell_id, item_id, source)
   craft_request_bridge.selectionGeneration = (craft_request_bridge.selectionGeneration or 0) + 1
@@ -2313,7 +2314,7 @@ local function update_place_order_status_anchor(form, container, visible)
   end
 end
 
-local function reset_minimum_quality_status(form)
+reset_minimum_quality_status = function(form)
   if type(form) ~= "table"
     or type(form.MinimumQuality) ~= "table"
   then
