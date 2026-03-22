@@ -1289,7 +1289,7 @@ local function install_guild_order_sync_hooks()
       EventRegistry:RegisterCallback("ProfessionsCustomerOrders.RecipeSelected", function(_, item_id, spell_id)
         set_selected_bridge_recipe(spell_id, item_id, "recipeSelectedEvent")
         schedule_craft_request_widget_refresh()
-      end)
+      end, craft_request_bridge)
 
       craft_request_bridge.recipeSelectionHooked = true
     end
