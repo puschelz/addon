@@ -363,6 +363,7 @@ local craft_request_bridge = {
 
 local refresh_place_order_status_widget
 local reset_minimum_quality_status
+local extract_recipe_context
 
 local function set_selected_bridge_recipe(spell_id, item_id, source)
   craft_request_bridge.selectionGeneration = (craft_request_bridge.selectionGeneration or 0) + 1
@@ -1272,7 +1273,8 @@ local function install_guild_order_sync_hooks()
     then
       hooksecurefunc(ProfessionsCustomerOrdersFrame.Form, "Init", function(_, order)
         if type(order) == "table" then
-          set_selected_bridge_recipe(order.spellID or order.spellId, order.itemID or order.itemId, "formInit")
+          local spell_id, item_id = extract_recipe_context(order)
+          set_selected_bridge_recipe(spell_id, item_id, "formInit")
           schedule_craft_request_widget_refresh()
         end
       end)
@@ -2209,7 +2211,7 @@ local function handle_craft_request_addon_message(prefix, message, channel, send
   )
 end
 
-local function extract_recipe_context(candidate)
+extract_recipe_context = function(candidate)
   if type(candidate) ~= "table" then
     return nil, nil
   end
