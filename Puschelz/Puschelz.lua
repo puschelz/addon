@@ -355,6 +355,10 @@ local craft_request_bridge = {
   widget = nil,
   lastWidgetRecipeKey = nil,
   lastWidgetStateKey = nil,
+  bridgeLoadAttempted = false,
+  bridgeLoaded = false,
+  bridgeLoadReason = "not_attempted",
+  bridgeDebugSynced = false,
 }
 
 local refresh_place_order_status_widget
@@ -1751,10 +1755,6 @@ local function try_load_bridge_addon()
     return true, "already_loaded"
   end
 
-  if is_addon_loaded_by_name("PuschelzBridge") then
-    return true, "already_loaded"
-  end
-
   local loaded, reason
   if C_AddOns and C_AddOns.LoadAddOn then
     loaded, reason = C_AddOns.LoadAddOn("PuschelzBridge")
@@ -1775,9 +1775,35 @@ local function try_load_bridge_addon()
   return false, "load_api_unavailable"
 end
 
+local function refresh_bridge_debug_snapshot()
+  ensure_db()
+  PuschelzDB.bridgeDebug = {
+    loaded = craft_request_bridge.bridgeLoaded and true or false,
+    loadReason = tostring(craft_request_bridge.bridgeLoadReason or "unknown"),
+    addonLoaded = is_addon_loaded_by_name("PuschelzBridge") and true or false,
+    snapshotVersion = tonumber(PuschelzBridgeDB and PuschelzBridgeDB.snapshotVersion),
+    generatedAt = tonumber(PuschelzBridgeDB and PuschelzBridgeDB.generatedAt),
+    recipeCount = count_table_entries(PuschelzBridgeDB and PuschelzBridgeDB.recipesByKey),
+    openRequestCount = type(PuschelzBridgeDB and PuschelzBridgeDB.openRequests) == "table" and #PuschelzBridgeDB.openRequests or 0,
+    updatedAt = now_epoch_ms(),
+  }
+  craft_request_bridge.bridgeDebugSynced = true
+end
+
 local function ensure_bridge_db()
   ensure_db()
-  local loaded, reason = try_load_bridge_addon()
+  if not craft_request_bridge.bridgeLoadAttempted then
+    local loaded, reason = try_load_bridge_addon()
+    craft_request_bridge.bridgeLoadAttempted = true
+    craft_request_bridge.bridgeLoaded = loaded and true or false
+    craft_request_bridge.bridgeLoadReason = tostring(reason or "unknown")
+    craft_request_bridge.bridgeDebugSynced = false
+  elseif not craft_request_bridge.bridgeLoaded and is_addon_loaded_by_name("PuschelzBridge") then
+    craft_request_bridge.bridgeLoaded = true
+    craft_request_bridge.bridgeLoadReason = "already_loaded"
+    craft_request_bridge.bridgeDebugSynced = false
+  end
+
   if type(PuschelzBridgeDB) ~= "table" then
     PuschelzBridgeDB = {}
   end
@@ -1788,16 +1814,9 @@ local function ensure_bridge_db()
     PuschelzBridgeDB.openRequests = {}
   end
 
-  PuschelzDB.bridgeDebug = {
-    loaded = loaded and true or false,
-    loadReason = tostring(reason or "unknown"),
-    addonLoaded = is_addon_loaded_by_name("PuschelzBridge") and true or false,
-    snapshotVersion = tonumber(PuschelzBridgeDB.snapshotVersion),
-    generatedAt = tonumber(PuschelzBridgeDB.generatedAt),
-    recipeCount = count_table_entries(PuschelzBridgeDB.recipesByKey),
-    openRequestCount = type(PuschelzBridgeDB.openRequests) == "table" and #PuschelzBridgeDB.openRequests or 0,
-    updatedAt = now_epoch_ms(),
-  }
+  if not craft_request_bridge.bridgeDebugSynced then
+    refresh_bridge_debug_snapshot()
+  end
 end
 
 local function recipe_bridge_key(spell_id, item_id)
