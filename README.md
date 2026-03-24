@@ -9,7 +9,9 @@ Users should treat this as a single addon install/update source. Do not install 
 
 ## Install
 
-1. Download the published `Puschelz-<version>.zip` release asset.
+1. Download the published `Puschelz-<version>.zip` package from one of these sources:
+   - GitHub Releases: `https://github.com/puschelz/puschelz-addon/releases`
+   - CurseForge: `https://legacy.curseforge.com/wow/addons/puschelz`
 2. Extract the zip into your WoW AddOns folder so both folders land side-by-side:
    - `World of Warcraft/_retail_/Interface/AddOns/Puschelz`
    - `World of Warcraft/_retail_/Interface/AddOns/PuschelzBridge`
