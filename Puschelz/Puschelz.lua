@@ -1811,6 +1811,16 @@ local function is_addon_enabled_by_name(addon_name)
     return false
   end
 
+  if C_AddOns and C_AddOns.GetAddOnEnableState then
+    local state = C_AddOns.GetAddOnEnableState(addon_name)
+    if type(state) == "number" then
+      return state > 0
+    end
+    if state ~= nil then
+      return state and true or false
+    end
+  end
+
   if GetAddOnEnableState then
     local character_name = UnitName and UnitName("player") or nil
     local state = GetAddOnEnableState(character_name, addon_name)
