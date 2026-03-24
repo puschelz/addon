@@ -359,6 +359,7 @@ local craft_request_bridge = {
   bridgeLoaded = false,
   bridgeLoadReason = "not_attempted",
   bridgeDebugSynced = false,
+  requiredAddonSummaryKey = nil,
 }
 
 local refresh_place_order_status_widget
@@ -433,6 +434,10 @@ local function ensure_db()
   end
   if type(PuschelzDB.guildOrders.orders) ~= "table" then
     PuschelzDB.guildOrders.orders = {}
+  end
+
+  if type(PuschelzDB.requiredAddonCompliance) ~= "table" then
+    PuschelzDB.requiredAddonCompliance = {}
   end
 end
 
@@ -1786,14 +1791,15 @@ local function refresh_bridge_debug_snapshot()
     loadReason = tostring(craft_request_bridge.bridgeLoadReason or "unknown"),
     addonLoaded = is_addon_loaded_by_name("PuschelzBridge") and true or false,
     snapshotVersion = tonumber(PuschelzBridgeDB and PuschelzBridgeDB.snapshotVersion),
+    requiredAddonsVersion = tonumber(PuschelzBridgeDB and PuschelzBridgeDB.requiredAddonsVersion),
     generatedAt = tonumber(PuschelzBridgeDB and PuschelzBridgeDB.generatedAt),
     recipeCount = count_table_entries(PuschelzBridgeDB and PuschelzBridgeDB.recipesByKey),
     openRequestCount = type(PuschelzBridgeDB and PuschelzBridgeDB.openRequests) == "table" and #PuschelzBridgeDB.openRequests or 0,
+    requiredAddonCount = type(PuschelzBridgeDB and PuschelzBridgeDB.requiredAddons) == "table" and #PuschelzBridgeDB.requiredAddons or 0,
     updatedAt = now_epoch_ms(),
   }
   craft_request_bridge.bridgeDebugSynced = true
 end
-
 local function ensure_bridge_db()
   ensure_db()
   if not craft_request_bridge.bridgeLoadAttempted then
@@ -1817,9 +1823,270 @@ local function ensure_bridge_db()
   if type(PuschelzBridgeDB.openRequests) ~= "table" then
     PuschelzBridgeDB.openRequests = {}
   end
+  if type(PuschelzBridgeDB.requiredAddons) ~= "table" then
+    PuschelzBridgeDB.requiredAddons = {}
+  end
 
   if not craft_request_bridge.bridgeDebugSynced then
     refresh_bridge_debug_snapshot()
+  end
+end
+
+local function trim_text(value)
+  if type(value) ~= "string" then
+    return nil
+  end
+
+  local trimmed = value:match("^%s*(.-)%s*$")
+  if not trimmed or trimmed == "" then
+    return nil
+  end
+
+  return trimmed
+end
+
+local function normalize_addon_folder_name(value)
+  local trimmed = trim_text(value)
+  if not trimmed then
+    return nil
+  end
+
+  return string.lower(trimmed)
+end
+
+local function get_addon_count()
+  if C_AddOns and C_AddOns.GetNumAddOns then
+    local count = C_AddOns.GetNumAddOns()
+    if type(count) == "number" then
+      return count
+    end
+  end
+
+  if GetNumAddOns then
+    local count = GetNumAddOns()
+    if type(count) == "number" then
+      return count
+    end
+  end
+
+  return 0
+end
+
+local function get_addon_name_by_index(index)
+  if C_AddOns and C_AddOns.GetAddOnInfo then
+    local info = C_AddOns.GetAddOnInfo(index)
+    if type(info) == "table" and type(info.name) == "string" and info.name ~= "" then
+      return info.name
+    end
+    if type(info) == "string" and info ~= "" then
+      return info
+    end
+  end
+
+  if GetAddOnInfo then
+    local name = GetAddOnInfo(index)
+    if type(name) == "string" and name ~= "" then
+      return name
+    end
+  end
+
+  return nil
+end
+
+local function is_addon_enabled_by_name(addon_name)
+  if type(addon_name) ~= "string" or addon_name == "" then
+    return false
+  end
+
+  if C_AddOns and C_AddOns.GetAddOnEnableState then
+    local state = C_AddOns.GetAddOnEnableState(addon_name)
+    if type(state) == "number" then
+      return state > 0
+    end
+    if state ~= nil then
+      return state and true or false
+    end
+  end
+
+  if GetAddOnEnableState then
+    local character_name = UnitName and UnitName("player") or nil
+    local state = GetAddOnEnableState(character_name, addon_name)
+    if type(state) == "number" then
+      return state > 0
+    end
+    if state ~= nil then
+      return state and true or false
+    end
+  end
+
+  return is_addon_loaded_by_name(addon_name)
+end
+
+local function build_active_addon_lookup()
+  local active = {}
+  local count = get_addon_count()
+
+  for index = 1, count do
+    local addon_name = get_addon_name_by_index(index)
+    local normalized_name = normalize_addon_folder_name(addon_name)
+    if normalized_name and is_addon_enabled_by_name(addon_name) then
+      active[normalized_name] = true
+    end
+  end
+
+  return active
+end
+
+local function collect_required_addon_aliases(match_folder_names)
+  if type(match_folder_names) ~= "table" then
+    return {}, {}
+  end
+
+  local normalized = {}
+  local display = {}
+  local seen = {}
+  for _, raw_name in ipairs(match_folder_names) do
+    local trimmed = trim_text(raw_name)
+    local normalized_name = normalize_addon_folder_name(raw_name)
+    if trimmed and normalized_name and not seen[normalized_name] then
+      seen[normalized_name] = true
+      table.insert(normalized, normalized_name)
+      table.insert(display, trimmed)
+    end
+  end
+
+  return normalized, display
+end
+
+local function summarize_required_addon_compliance()
+  ensure_bridge_db()
+
+  local active_addons = build_active_addon_lookup()
+  local missing = {}
+  local required_count = 0
+
+  for _, addon in ipairs(PuschelzBridgeDB.requiredAddons or {}) do
+    if type(addon) == "table" and type(addon.name) == "string" then
+      local normalized_aliases, display_aliases = collect_required_addon_aliases(addon.matchFolderNames)
+      if #normalized_aliases > 0 then
+        required_count = required_count + 1
+
+        local matched = false
+        for _, alias in ipairs(normalized_aliases) do
+          if active_addons[alias] then
+            matched = true
+            break
+          end
+        end
+
+        if not matched then
+          table.insert(missing, {
+            addonId = tostring(addon.addonId or addon.name),
+            name = addon.name,
+            description = addon.description,
+            matchFolderNames = display_aliases,
+          })
+        end
+      end
+    end
+  end
+
+  table.sort(missing, function(left, right)
+    return string.lower(left.name) < string.lower(right.name)
+  end)
+
+  local hash_parts = {
+    tostring(tonumber(PuschelzBridgeDB.requiredAddonsVersion) or 0),
+  }
+  for _, addon in ipairs(missing) do
+    table.insert(hash_parts, addon.addonId)
+    table.insert(hash_parts, table.concat(addon.matchFolderNames, ","))
+  end
+
+  return {
+    requiredAddonsVersion = tonumber(PuschelzBridgeDB.requiredAddonsVersion) or 0,
+    requiredCount = required_count,
+    missingCount = #missing,
+    satisfiedCount = required_count - #missing,
+    missing = missing,
+    summaryKey = tostring(stable_hash_number(table.concat(hash_parts, "|"))),
+  }
+end
+
+local function format_required_addon_entry(addon)
+  if type(addon) ~= "table" then
+    return "unknown"
+  end
+
+  local alias_text = ""
+  if type(addon.matchFolderNames) == "table" and #addon.matchFolderNames > 0 then
+    alias_text = string.format(" [%s]", table.concat(addon.matchFolderNames, " / "))
+  end
+
+  return string.format("%s%s", tostring(addon.name or "unknown"), alias_text)
+end
+
+local function print_required_addon_status(verbose)
+  local summary = summarize_required_addon_compliance()
+  local version_text = summary.requiredAddonsVersion > 0 and tostring(summary.requiredAddonsVersion) or "n/a"
+
+  if summary.requiredCount == 0 then
+    print(string.format("Puschelz: requiredAddons=0, missing=0, bridgeVersion=%s", version_text))
+    return summary
+  end
+
+  print(
+    string.format(
+      "Puschelz: requiredAddons=%d, satisfied=%d, missing=%d, bridgeVersion=%s",
+      summary.requiredCount,
+      summary.satisfiedCount,
+      summary.missingCount,
+      version_text
+    )
+  )
+
+  if summary.missingCount == 0 then
+    if verbose then
+      print("Puschelz: all required addons are active.")
+    end
+    return summary
+  end
+
+  for _, addon in ipairs(summary.missing) do
+    print(string.format("Puschelz: missing required addon %s", format_required_addon_entry(addon)))
+  end
+
+  return summary
+end
+
+local function warn_missing_required_addons_if_needed()
+  local summary = summarize_required_addon_compliance()
+  craft_request_bridge.requiredAddonSummaryKey = summary.summaryKey
+
+  if summary.requiredCount == 0 or summary.missingCount == 0 then
+    return
+  end
+
+  ensure_db()
+  local persisted = PuschelzDB.requiredAddonCompliance
+  local version_text = tostring(summary.requiredAddonsVersion)
+  if persisted.lastWarnedSummaryKey == summary.summaryKey and persisted.lastWarnedVersion == version_text then
+    return
+  end
+
+  persisted.lastWarnedSummaryKey = summary.summaryKey
+  persisted.lastWarnedVersion = version_text
+  persisted.updatedAt = now_epoch_ms()
+
+  red_chat_message(
+    string.format(
+      "Puschelz: %d required addon(s) missing. Use /puschelz addons for details.",
+      summary.missingCount
+    )
+  )
+
+  for _, addon in ipairs(summary.missing) do
+    red_chat_message(string.format("Puschelz: missing %s", format_required_addon_entry(addon)))
   end
 end
 
@@ -3008,6 +3275,7 @@ local function print_status()
   local bank_tabs = PuschelzDB.guildBank.tabs or {}
   local calendar_events = PuschelzDB.calendar.events or {}
   local guild_orders = PuschelzDB.guildOrders.orders or {}
+  local required_addon_summary = summarize_required_addon_compliance()
 
   local bank_scan = PuschelzDB.guildBank.lastScannedAt
   local calendar_scan = PuschelzDB.calendar.lastScannedAt
@@ -3022,6 +3290,19 @@ local function print_status()
       bank_scan and date("%Y-%m-%d %H:%M", math.floor(bank_scan / 1000)) or "never",
       calendar_scan and date("%Y-%m-%d %H:%M", math.floor(calendar_scan / 1000)) or "never",
       guild_order_scan and date("%Y-%m-%d %H:%M", math.floor(guild_order_scan / 1000)) or "never"
+    )
+  )
+
+  local version_text = required_addon_summary.requiredAddonsVersion > 0
+    and tostring(required_addon_summary.requiredAddonsVersion)
+    or "n/a"
+  print(
+    string.format(
+      "Puschelz: requiredAddons=%d, satisfied=%d, missing=%d, bridgeVersion=%s",
+      required_addon_summary.requiredCount,
+      required_addon_summary.satisfiedCount,
+      required_addon_summary.missingCount,
+      version_text
     )
   )
 end
@@ -3049,6 +3330,11 @@ SlashCmdList.PUSCHELZ = function(msg)
     return
   end
 
+  if command == "addons" then
+    print_required_addon_status(true)
+    return
+  end
+
   if command == "syncorders" then
     begin_full_guild_order_sync(true)
     return
@@ -3069,7 +3355,7 @@ SlashCmdList.PUSCHELZ = function(msg)
     return
   end
 
-  print("Puschelz usage: /puschelz status | /puschelz scan | /puschelz orders | /puschelz syncorders | /puschelz check | /puschelz raidstatus")
+  print("Puschelz usage: /puschelz status | /puschelz scan | /puschelz orders | /puschelz addons | /puschelz syncorders | /puschelz check | /puschelz raidstatus")
 end
 
 local frame = CreateFrame("Frame")
@@ -3096,6 +3382,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
     request_calendar_scan(false)
     print_matching_guild_order_reminders()
     print_matching_bridge_requests()
+    warn_missing_required_addons_if_needed()
     seed_raid_random_delay()
     register_raid_status_prefix()
     register_craft_request_prefix()
