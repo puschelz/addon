@@ -2,7 +2,7 @@
 
 Use this for every addon release (`v0.13.1`, `v0.14.0`, ...).
 
-Main branch pushes now auto-create the next `v*` tag and publish the GitHub release in the same workflow run.
+Main branch pushes now auto-create the next `v*` tag and publish the GitHub release in the same workflow run. When the `CURSEFORGE_API_KEY` repository secret is configured, the same workflow also uploads the bundled zip to CurseForge project `1492984`.
 Manual tagging is only needed for backfills, re-cuts, or one-off releases from a non-main commit.
 
 ## 1) Update version
@@ -43,18 +43,19 @@ gh release create vX.Y.Z \
   --notes "Short release notes"
 ```
 
-For the normal path, skip this step too; the same auto-tag workflow now publishes the release artifact immediately after pushing the tag.
+For the normal path, skip this step too; the same auto-tag workflow now publishes the release artifact immediately after pushing the tag and mirrors it to CurseForge.
 
 If you are doing a manual backfill or `gh` fails due token/org policy, create the release manually in GitHub UI from tag `vX.Y.Z`.
 
 ## 4) Validate package
 
 1. Confirm release exists on GitHub.
-2. Download the release zip and confirm it contains both addon folders at the top level:
+2. Confirm the new file appears on CurseForge.
+3. Download the release zip and confirm it contains both addon folders at the top level:
    - `Puschelz/`
    - `PuschelzBridge/`
-3. In WoWUp, refresh/update the addon.
-4. In-game:
+4. In WoWUp, refresh/update the addon.
+5. In-game:
    - `/pz status`
    - open guild bank + `/reload`
    - confirm `WTF/Account/<ACCOUNT>/SavedVariables/Puschelz.lua` updated

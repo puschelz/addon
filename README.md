@@ -146,7 +146,7 @@ The `tabs[*].items[*]`, `calendar.events[*]`, optional `calendar.events[*].atten
 
 ## Releases
 
-See `RELEASE_CHECKLIST.md` for the repeatable version bump + tag + release flow. The published release zip is the single user-facing install artifact and must always contain both `Puschelz/` and `PuschelzBridge/`.
+See `RELEASE_CHECKLIST.md` for the repeatable version bump + tag + release flow. The published release zip is the single user-facing install artifact and must always contain both `Puschelz/` and `PuschelzBridge/`. Main-branch releases now publish that bundled zip to both GitHub Releases and CurseForge when the `CURSEFORGE_API_KEY` repository secret is configured.
 
 ## Interface compatibility
 

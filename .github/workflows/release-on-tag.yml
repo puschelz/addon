@@ -39,3 +39,10 @@ jobs:
           append_body: true
           body: |
             Automated bundled release asset for WoWUp. This zip contains both `Puschelz/` and `PuschelzBridge/` and should be installed as one addon package.
+
+      - name: Upload bundled zip to CurseForge
+        if: ${{ secrets.CURSEFORGE_API_KEY != '' }}
+        env:
+          CURSEFORGE_API_KEY: ${{ secrets.CURSEFORGE_API_KEY }}
+          CURSEFORGE_TAG_NAME: ${{ github.ref_name }}
+        run: bash scripts/upload-curseforge.sh
