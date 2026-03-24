@@ -1,5 +1,8 @@
 # Puschelz WoW Addon (V15)
 
+[![CurseForge Addon Name](https://cf.way2muchnoise.eu/title/1492984.svg)](https://curseforge.com/wow/addons/puschelz)
+[![CurseForge Downloads](https://cf.way2muchnoise.eu/1492984.svg)](https://curseforge.com/wow/addons/puschelz)
+
 Retail WoW addon bundle for guild sync. The release ships as one user-facing install package, but it contains two addon folders internally:
 
 - `Puschelz/` for in-game data capture and UI
@@ -9,7 +12,9 @@ Users should treat this as a single addon install/update source. Do not install 
 
 ## Install
 
-1. Download the published `Puschelz-<version>.zip` release asset.
+1. Download the published `Puschelz-<version>.zip` package from one of these sources:
+   - GitHub Releases: `https://github.com/puschelz/puschelz-addon/releases`
+   - CurseForge: `https://legacy.curseforge.com/wow/addons/puschelz`
 2. Extract the zip into your WoW AddOns folder so both folders land side-by-side:
    - `World of Warcraft/_retail_/Interface/AddOns/Puschelz`
    - `World of Warcraft/_retail_/Interface/AddOns/PuschelzBridge`
