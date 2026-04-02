@@ -37,6 +37,7 @@ local RAID_ROSTER_DEBOUNCE_SEC = 1.0
 local RAID_STATUS_ROW_COUNT = 40
 local CALENDAR_ATTENDEE_SCAN_TIMEOUT_SEC = 45
 local CALENDAR_ATTENDEE_EVENT_OPEN_TIMEOUT_SEC = 1.5
+local CALENDAR_SYNC_BUTTON_RESET_DELAY_SEC = 4
 local GUILD_ORDER_SYNC_TIMEOUT_SEC = 45
 
 local raid_status = {
@@ -326,7 +327,18 @@ local calendar_attendee_scan = {
   pendingRaidEvents = {},
   activeRaidEvent = nil,
   scanGeneration = 0,
+  requestPending = false,
+  requestGeneration = 0,
+  pendingNotifyOnCompletion = false,
   notifyOnCompletion = false,
+}
+
+local calendar_sync_ui = {
+  button = nil,
+  filterButton = nil,
+  buttonHooksInstalled = false,
+  state = "idle",
+  stateGeneration = 0,
 }
 
 local guild_order_sync = {
@@ -654,11 +666,64 @@ local function finalize_calendar_capture(events)
   PuschelzDB.updatedAt = PuschelzDB.calendar.lastScannedAt
 end
 
+local function set_calendar_sync_button_state(state)
+  calendar_sync_ui.state = state or "idle"
+
+  local button = calendar_sync_ui.button
+  if not button then
+    return
+  end
+
+  if calendar_sync_ui.state == "syncing" then
+    button:SetEnabled(false)
+    button:SetText("Syncing...")
+    return
+  end
+
+  button:SetEnabled(true)
+  if calendar_sync_ui.state == "done" then
+    button:SetText("Synced")
+    return
+  end
+
+  button:SetText("Sync Calendar")
+end
+
+local function begin_calendar_sync_feedback()
+  calendar_sync_ui.stateGeneration = calendar_sync_ui.stateGeneration + 1
+  set_calendar_sync_button_state("syncing")
+end
+
+local function finish_calendar_sync_feedback()
+  calendar_sync_ui.stateGeneration = calendar_sync_ui.stateGeneration + 1
+  local state_generation = calendar_sync_ui.stateGeneration
+  set_calendar_sync_button_state("done")
+
+  if not C_Timer or not C_Timer.After then
+    set_calendar_sync_button_state("idle")
+    return
+  end
+
+  C_Timer.After(CALENDAR_SYNC_BUTTON_RESET_DELAY_SEC, function()
+    if calendar_sync_ui.stateGeneration ~= state_generation then
+      return
+    end
+
+    if calendar_attendee_scan.inProgress or calendar_attendee_scan.requestPending then
+      return
+    end
+
+    set_calendar_sync_button_state("idle")
+  end)
+end
+
 local function reset_calendar_attendee_scan_state()
   calendar_attendee_scan.inProgress = false
   calendar_attendee_scan.events = nil
   calendar_attendee_scan.pendingRaidEvents = {}
   calendar_attendee_scan.activeRaidEvent = nil
+  calendar_attendee_scan.requestPending = false
+  calendar_attendee_scan.pendingNotifyOnCompletion = false
   calendar_attendee_scan.notifyOnCompletion = false
 end
 
@@ -697,6 +762,7 @@ local function complete_calendar_attendee_scan()
   local notify_on_completion = calendar_attendee_scan.notifyOnCompletion
   reset_calendar_attendee_scan_state()
   finalize_calendar_capture(events)
+  finish_calendar_sync_feedback()
   if notify_on_completion then
     print_calendar_scan_complete(events)
   end
@@ -864,6 +930,115 @@ local function on_calendar_update_invite_list()
   finish_active_calendar_event_attendee_capture(active_raid_event)
 end
 
+local refresh_calendar_sync_button
+local request_calendar_scan
+
+local function is_frame_widget(value)
+  return type(value) == "table" and type(value.GetObjectType) == "function"
+end
+
+local function calendar_frame_is_visible()
+  return type(CalendarFrame) == "table"
+    and type(CalendarFrame.IsShown) == "function"
+    and CalendarFrame:IsShown()
+end
+
+local function get_calendar_filter_button()
+  if type(CalendarFrame) ~= "table" then
+    return nil
+  end
+
+  local explicit_candidates = {
+    CalendarFrame.FilterButton,
+    CalendarFrame.EventFilterButton,
+    _G and _G.CalendarFilterButton,
+    _G and _G.CalendarFrameFilterButton,
+    _G and _G.CalendarEventFilterButton,
+  }
+
+  for _, candidate in ipairs(explicit_candidates) do
+    if is_frame_widget(candidate) and candidate:GetObjectType() == "Button" then
+      return candidate
+    end
+  end
+
+  local queue = { CalendarFrame }
+  local seen = { [CalendarFrame] = true }
+  while #queue > 0 do
+    local current = table.remove(queue, 1)
+    if is_frame_widget(current) and current:GetObjectType() == "Button" then
+      local name = current.GetName and current:GetName() or nil
+      local label = current.GetText and current:GetText() or nil
+      if type(name) == "string" and string.find(string.lower(name), "filter", 1, true) then
+        return current
+      end
+      if type(label) == "string" and string.find(string.lower(label), "filter", 1, true) then
+        return current
+      end
+    end
+
+    if is_frame_widget(current) then
+      for _, child in ipairs({ current:GetChildren() }) do
+        if is_frame_widget(child) and not seen[child] then
+          seen[child] = true
+          table.insert(queue, child)
+        end
+      end
+    end
+  end
+
+  return nil
+end
+
+local function anchor_calendar_sync_button(button, filter_button)
+  button:ClearAllPoints()
+  button:SetPoint("RIGHT", filter_button, "LEFT", -4, 0)
+end
+
+local function ensure_calendar_sync_button()
+  if type(CalendarFrame) ~= "table" then
+    return nil
+  end
+
+  if not calendar_sync_ui.button then
+    local button = CreateFrame("Button", nil, CalendarFrame, "UIPanelButtonTemplate")
+    button:SetSize(110, 22)
+    button:SetText("Sync Calendar")
+    button:SetScript("OnClick", function()
+      request_calendar_scan(true)
+    end)
+    calendar_sync_ui.button = button
+    set_calendar_sync_button_state(calendar_sync_ui.state)
+  end
+
+  if not calendar_sync_ui.buttonHooksInstalled and type(CalendarFrame.HookScript) == "function" then
+    CalendarFrame:HookScript("OnShow", function()
+      if refresh_calendar_sync_button then
+        refresh_calendar_sync_button()
+      end
+    end)
+    calendar_sync_ui.buttonHooksInstalled = true
+  end
+
+  return calendar_sync_ui.button
+end
+
+refresh_calendar_sync_button = function()
+  local button = ensure_calendar_sync_button()
+  local filter_button = get_calendar_filter_button()
+  if not button or not filter_button or not calendar_frame_is_visible() then
+    if button then
+      button:Hide()
+    end
+    return
+  end
+
+  calendar_sync_ui.filterButton = filter_button
+  anchor_calendar_sync_button(button, filter_button)
+  set_calendar_sync_button_state(calendar_sync_ui.state)
+  button:Show()
+end
+
 local function capture_calendar(notify_on_completion)
   if calendar_attendee_scan.inProgress then
     if notify_on_completion then
@@ -875,6 +1050,7 @@ local function capture_calendar(notify_on_completion)
   local events, pending_raid_events = build_calendar_payload()
   if #pending_raid_events == 0 then
     finalize_calendar_capture(events)
+    finish_calendar_sync_feedback()
     if notify_on_completion then
       print_calendar_scan_complete(events)
     end
@@ -900,15 +1076,49 @@ local function capture_calendar(notify_on_completion)
   process_next_calendar_attendee_event()
 end
 
-local function request_calendar_scan(notify_on_completion)
+request_calendar_scan = function(notify_on_completion)
   if not C_Calendar or not C_Calendar.OpenCalendar then
     if notify_on_completion then
       print("Puschelz: calendar scan is unavailable right now.")
     end
     return
   end
+
+  if calendar_attendee_scan.inProgress then
+    if notify_on_completion then
+      calendar_attendee_scan.notifyOnCompletion = true
+    end
+    begin_calendar_sync_feedback()
+    return
+  end
+
+  begin_calendar_sync_feedback()
+
+  if calendar_frame_is_visible() then
+    capture_calendar(notify_on_completion)
+    return
+  end
+
+  calendar_attendee_scan.requestPending = true
+  calendar_attendee_scan.requestGeneration = calendar_attendee_scan.requestGeneration + 1
+  if notify_on_completion then
+    calendar_attendee_scan.pendingNotifyOnCompletion = true
+  end
+  local request_generation = calendar_attendee_scan.requestGeneration
+
   C_Calendar.OpenCalendar()
-  capture_calendar(notify_on_completion)
+  if C_Timer and C_Timer.After then
+    C_Timer.After(1.5, function()
+      if not calendar_attendee_scan.requestPending or calendar_attendee_scan.requestGeneration ~= request_generation then
+        return
+      end
+
+      local pending_notify = calendar_attendee_scan.pendingNotifyOnCompletion
+      calendar_attendee_scan.requestPending = false
+      calendar_attendee_scan.pendingNotifyOnCompletion = false
+      capture_calendar(pending_notify)
+    end)
+  end
 end
 
 local function trim_string(value)
@@ -3398,6 +3608,7 @@ SlashCmdList.PUSCHELZ = function(msg)
 end
 
 local frame = CreateFrame("Frame")
+frame:RegisterEvent("ADDON_LOADED")
 frame:RegisterEvent("PLAYER_LOGIN")
 frame:RegisterEvent("PLAYER_GUILD_UPDATE")
 frame:RegisterEvent("TRADE_SKILL_SHOW")
@@ -3414,11 +3625,18 @@ frame:RegisterEvent("CHAT_MSG_ADDON")
 frame:RegisterEvent("PLAYER_LOGOUT")
 
 frame:SetScript("OnEvent", function(_, event, ...)
+  if event == "ADDON_LOADED" then
+    local addon_name = ...
+    if addon_name == "Blizzard_Calendar" then
+      refresh_calendar_sync_button()
+    end
+    return
+  end
+
   if event == "PLAYER_LOGIN" then
     ensure_db()
     ensure_bridge_db()
     refresh_player_metadata()
-    request_calendar_scan(false)
     print_matching_guild_order_reminders()
     print_matching_bridge_requests()
     warn_missing_required_addons_if_needed()
@@ -3465,8 +3683,12 @@ frame:SetScript("OnEvent", function(_, event, ...)
   end
 
   if event == "CALENDAR_UPDATE_EVENT_LIST" then
-    if not calendar_attendee_scan.inProgress then
-      capture_calendar(false)
+    refresh_calendar_sync_button()
+    if calendar_attendee_scan.requestPending then
+      local notify_on_completion = calendar_attendee_scan.pendingNotifyOnCompletion
+      calendar_attendee_scan.requestPending = false
+      calendar_attendee_scan.pendingNotifyOnCompletion = false
+      capture_calendar(notify_on_completion)
     end
     return
   end
