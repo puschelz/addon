@@ -937,6 +937,13 @@ local function is_frame_widget(value)
   return type(value) == "table" and type(value.GetObjectType) == "function"
 end
 
+local function is_visible_button_widget(value)
+  return is_frame_widget(value)
+    and value:GetObjectType() == "Button"
+    and type(value.IsShown) == "function"
+    and value:IsShown()
+end
+
 local function calendar_frame_is_visible()
   return type(CalendarFrame) == "table"
     and type(CalendarFrame.IsShown) == "function"
@@ -948,16 +955,22 @@ local function get_calendar_filter_button()
     return nil
   end
 
-  local explicit_candidates = {
-    CalendarFrame.FilterButton,
-    CalendarFrame.EventFilterButton,
-    _G and _G.CalendarFilterButton,
-    _G and _G.CalendarFrameFilterButton,
-    _G and _G.CalendarEventFilterButton,
-  }
+  local explicit_candidates = {}
+  local function add_explicit_candidate(candidate)
+    if candidate ~= nil then
+      table.insert(explicit_candidates, candidate)
+    end
+  end
 
-  for _, candidate in ipairs(explicit_candidates) do
-    if is_frame_widget(candidate) and candidate:GetObjectType() == "Button" then
+  add_explicit_candidate(CalendarFrame.FilterButton)
+  add_explicit_candidate(CalendarFrame.EventFilterButton)
+  add_explicit_candidate(_G and _G.CalendarFilterButton)
+  add_explicit_candidate(_G and _G.CalendarFrameFilterButton)
+  add_explicit_candidate(_G and _G.CalendarEventFilterButton)
+
+  for index = 1, #explicit_candidates do
+    local candidate = explicit_candidates[index]
+    if is_visible_button_widget(candidate) then
       return candidate
     end
   end
@@ -966,7 +979,7 @@ local function get_calendar_filter_button()
   local seen = { [CalendarFrame] = true }
   while #queue > 0 do
     local current = table.remove(queue, 1)
-    if is_frame_widget(current) and current:GetObjectType() == "Button" then
+    if is_visible_button_widget(current) then
       local name = current.GetName and current:GetName() or nil
       local label = current.GetText and current:GetText() or nil
       if type(name) == "string" and string.find(string.lower(name), "filter", 1, true) then
@@ -1076,6 +1089,13 @@ local function capture_calendar(notify_on_completion)
   process_next_calendar_attendee_event()
 end
 
+local function consume_pending_calendar_request(notify_on_completion)
+  local merged_notify = notify_on_completion or calendar_attendee_scan.pendingNotifyOnCompletion
+  calendar_attendee_scan.requestPending = false
+  calendar_attendee_scan.pendingNotifyOnCompletion = false
+  capture_calendar(merged_notify)
+end
+
 request_calendar_scan = function(notify_on_completion)
   if not C_Calendar or not C_Calendar.OpenCalendar then
     if notify_on_completion then
@@ -1095,7 +1115,11 @@ request_calendar_scan = function(notify_on_completion)
   begin_calendar_sync_feedback()
 
   if calendar_frame_is_visible() then
-    capture_calendar(notify_on_completion)
+    if calendar_attendee_scan.requestPending then
+      consume_pending_calendar_request(notify_on_completion)
+    else
+      capture_calendar(notify_on_completion)
+    end
     return
   end
 
@@ -3685,10 +3709,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
   if event == "CALENDAR_UPDATE_EVENT_LIST" then
     refresh_calendar_sync_button()
     if calendar_attendee_scan.requestPending then
-      local notify_on_completion = calendar_attendee_scan.pendingNotifyOnCompletion
-      calendar_attendee_scan.requestPending = false
-      calendar_attendee_scan.pendingNotifyOnCompletion = false
-      capture_calendar(notify_on_completion)
+      consume_pending_calendar_request(false)
     end
     return
   end
