@@ -44,7 +44,7 @@ Then configure a GitHub PAT in WoWUp and retry install/update.
 ## Capture flow
 
 1. Open the guild bank and browse tabs (the addon queues all tabs and captures slot data).
-2. Calendar data is scanned on login and on calendar updates.
+2. Calendar data is scanned manually from the in-game calendar via the `Sync Calendar` button next to Filters; the button shows `Syncing...` while running and briefly switches to `Synced` when finished.
 3. Open either the crafter or customer crafting-orders UI to passively snapshot currently visible guild orders; the addon prints a chat line when that passive snapshot discovers new order ids.
 4. Use the `Sync Guild Orders` button on either professions/orders window to actively request and capture visible guild orders from both the crafter and `My Orders` views.
 5. Matching open guild orders are printed into chat on login for the current character until they disappear from a later open-order scan.
