@@ -3703,7 +3703,7 @@ local function update_minimap_menu_frame()
   set_toggle_enabled(buttons.stopCombatLogOnLeave, contextual_enabled)
   set_toggle_enabled(buttons.showCombatLogReminder, combat_enabled)
 
-  frame:SetHeight(286)
+  frame:SetHeight(304)
 end
 
 local function ensure_minimap_menu_frame()
@@ -3713,7 +3713,7 @@ local function ensure_minimap_menu_frame()
   end
 
   local frame = CreateFrame("Frame", "PuschelzMinimapMenuFrame", UIParent, "BasicFrameTemplateWithInset")
-  frame:SetSize(320, 286)
+  frame:SetSize(360, 304)
   frame:SetFrameStrata("DIALOG")
   frame:SetClampedToScreen(true)
   frame:SetMovable(true)
@@ -3733,7 +3733,7 @@ local function ensure_minimap_menu_frame()
 
   local function create_menu_button(name, label, anchor, on_click)
     local button = CreateFrame("Button", name, frame, "UIPanelButtonTemplate")
-    button:SetSize(200, 24)
+    button:SetSize(anchor.width or 200, anchor.height or 24)
     if anchor.relativeTo then
       button:SetPoint(anchor.point or "TOP", anchor.relativeTo, anchor.relativePoint or "BOTTOM", anchor.x or 0, anchor.y or 0)
     else
@@ -3756,9 +3756,7 @@ local function ensure_minimap_menu_frame()
       toggle:SetPoint(anchor.point or "TOPLEFT", frame, anchor.relativePoint or "TOPLEFT", anchor.x or (options.indentX or 18), anchor.y or 0)
     end
     toggle:SetScript("OnClick", on_click)
-    if options.scale then
-      toggle:SetScale(options.scale)
-    end
+    toggle:SetSize(options.size or 28, options.size or 28)
 
     local label_font = _G[toggle:GetName() .. "Text"]
     if label_font then
@@ -3800,7 +3798,7 @@ local function ensure_minimap_menu_frame()
   buttons.simc = create_menu_button(
     "PuschelzMinimapMenuSimcButton",
     "Sync SimC + Run Droptimizer",
-    { point = "TOP", relativePoint = "TOP", x = 0, y = -38 },
+    { point = "TOP", relativePoint = "TOP", x = 0, y = -38, width = 300 },
     function()
       queue_simc_profile_request(true)
     end
@@ -3809,7 +3807,7 @@ local function ensure_minimap_menu_frame()
   buttons.autoChatLog = create_menu_toggle(
     "PuschelzMinimapMenuAutoChatLogToggle",
     "Auto enable chat log",
-    { relativeTo = buttons.simc, point = "TOPLEFT", relativePoint = "BOTTOMLEFT", x = -51, y = -20 },
+    { point = "TOPLEFT", relativePoint = "TOPLEFT", x = 22, y = -76 },
     function(self)
       auto_logging.ensure_settings().autoEnableChatLog = self:GetChecked() and true or false
       auto_logging.set_chat_logging_enabled(self:GetChecked() and true or false, "manual toggle")
@@ -3825,7 +3823,7 @@ local function ensure_minimap_menu_frame()
   buttons.autoCombatLog = create_menu_toggle(
     "PuschelzMinimapMenuAutoCombatLogToggle",
     "Auto enable combat log",
-    { relativeTo = buttons.autoChatLog, point = "TOPLEFT", relativePoint = "BOTTOMLEFT", x = 0, y = -12 },
+    { point = "TOPLEFT", relativePoint = "TOPLEFT", x = 22, y = -110 },
     function(self)
       local enabled = self:GetChecked() and true or false
       local settings = auto_logging.ensure_settings()
@@ -3853,16 +3851,15 @@ local function ensure_minimap_menu_frame()
   )
 
   local sub_toggle_options = {
-    indentX = 34,
-    labelWidth = 225,
-    scale = 0.92,
+    labelWidth = 270,
+    size = 26,
     fontObject = GameFontHighlightSmall,
   }
 
   buttons.combatLogOnlyInGroupContext = create_menu_toggle(
     "PuschelzMinimapMenuCombatLogGroupContextToggle",
     "Only auto enable in raid or instance groups",
-    { relativeTo = buttons.autoCombatLog, point = "TOPLEFT", relativePoint = "BOTTOMLEFT", x = -17, y = -16 },
+    { point = "TOPLEFT", relativePoint = "TOPLEFT", x = 42, y = -146 },
     function(self)
       auto_logging.ensure_settings().onlyEnableCombatLogInGroupContext = self:GetChecked() and true or false
       if not self:GetChecked() then
@@ -3881,7 +3878,7 @@ local function ensure_minimap_menu_frame()
   buttons.stopCombatLogOnLeave = create_menu_toggle(
     "PuschelzMinimapMenuCombatLogStopToggle",
     "Auto stop after leaving raid or instance groups",
-    { relativeTo = buttons.combatLogOnlyInGroupContext, point = "TOPLEFT", relativePoint = "BOTTOMLEFT", x = 0, y = -8 },
+    { point = "TOPLEFT", relativePoint = "TOPLEFT", x = 42, y = -178 },
     function(self)
       auto_logging.ensure_settings().stopCombatLogOnLeave = self:GetChecked() and true or false
       auto_logging.schedule_evaluation()
@@ -3897,7 +3894,7 @@ local function ensure_minimap_menu_frame()
   buttons.showCombatLogReminder = create_menu_toggle(
     "PuschelzMinimapMenuCombatLogReminderToggle",
     "Show Live Log reminder",
-    { relativeTo = buttons.stopCombatLogOnLeave, point = "TOPLEFT", relativePoint = "BOTTOMLEFT", x = 0, y = -8 },
+    { point = "TOPLEFT", relativePoint = "TOPLEFT", x = 42, y = -210 },
     function(self)
       auto_logging.ensure_settings().showCombatLogReminder = self:GetChecked() and true or false
       update_minimap_menu_frame()
@@ -3912,7 +3909,7 @@ local function ensure_minimap_menu_frame()
   buttons.close = create_menu_button(
     "PuschelzMinimapMenuCloseButton",
     "Close",
-    { relativeTo = buttons.showCombatLogReminder, point = "TOP", relativePoint = "BOTTOM", x = 0, y = -18 },
+    { point = "BOTTOM", relativePoint = "BOTTOM", x = 0, y = 16, width = 120 },
     function()
     end
   )
