@@ -67,7 +67,7 @@ _Avoid_: Opaque indicator, combined status blob, verbose queue dump
 - A **Bridge Acknowledgment** confirms backend acceptance for one **Sync Subject** and **Payload Version**.
 - A **Delayed Clear** means the addon keeps showing pending work until it reloads and reads the matching **Bridge Acknowledgment**.
 - A **Queue TTL** removes stale queue work after 24 hours if it was neither replaced by a newer version nor cleared by acknowledgment.
-- A **Broadcast Trigger** publishes guild-visible queue work for explicit sync actions such as calendar sync, guild-order sync, and SimC sync actions.
+- A **Broadcast Trigger** publishes guild-visible queue work for explicit guild-order and SimC sync actions.
 - Passive guild-order capture creates local **Pending Reload** state but is not a **Broadcast Trigger** in v1.
 - Guild bank capture is excluded from the v1 guild-visible queue.
 - The **Sync Tooltip** distinguishes local **Pending Reload** state from the **Guild Sync Queue** even though both collapse into one red dot.
@@ -91,7 +91,7 @@ _Avoid_: Opaque indicator, combined status blob, verbose queue dump
 > **Dev:** "How do receivers know whether a rebroadcast is new work?"
 > **Domain expert:** "They compare the incoming **Payload Version** for that **Sync Subject** against the stored one, ignore older versions, and may refresh metadata for equal versions."
 >
-> **Dev:** "What if calendar changed after guild orders were already synced?"
+> **Dev:** "What if SimC changed after guild orders were already synced?"
 > **Domain expert:** "The subject gets one newer **Payload Version** and may resend already-synced scopes; the backend must handle that replay safely."
 >
 > **Dev:** "Can the red dot clear as soon as the desktop upload succeeds?"

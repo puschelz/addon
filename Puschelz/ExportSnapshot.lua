@@ -19,13 +19,11 @@ function PuschelzExportSnapshot.ensure_db(schema_version, minimap_default_angle)
   local db = PuschelzDB
   db.schemaVersion = schema_version
   db.updatedAt = db.updatedAt or 0
+  db.calendar = nil
 
   local guild_bank = ensure_table(db, "guildBank")
   guild_bank.tabs = type(guild_bank.tabs) == "table" and guild_bank.tabs or {}
   guild_bank.tabsByIndex = type(guild_bank.tabsByIndex) == "table" and guild_bank.tabsByIndex or {}
-
-  local calendar = ensure_table(db, "calendar")
-  calendar.events = type(calendar.events) == "table" and calendar.events or {}
 
   local guild_orders = ensure_table(db, "guildOrders")
   guild_orders.orders = type(guild_orders.orders) == "table" and guild_orders.orders or {}

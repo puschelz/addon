@@ -7,7 +7,6 @@ assert(PuschelzBridgeSnapshot, "Puschelz bridge snapshot module missing")
 -- when additive defaults can be populated lazily without a keyed migration.
 local SCHEMA_VERSION = 18
 local GUILD_BANK_SLOTS_PER_TAB = 98
-local CALENDAR_MONTH_OFFSETS = { -1, 0, 1, 2 }
 local GUILD_ORDER_TYPE_GUILD = 1
 local GUILD_ORDER_STATE_FULFILLED = 11
 local GUILD_ORDER_STATE_CANCELED = 13
@@ -43,9 +42,6 @@ local RAID_QUERY_COOLDOWN_MS = 8000
 local RAID_REPLY_TIMEOUT_MS = 4000
 local RAID_ROSTER_DEBOUNCE_SEC = 1.0
 local RAID_STATUS_ROW_COUNT = 40
-local CALENDAR_ATTENDEE_SCAN_TIMEOUT_SEC = 45
-local CALENDAR_ATTENDEE_EVENT_OPEN_TIMEOUT_SEC = 1.5
-local CALENDAR_SYNC_BUTTON_RESET_DELAY_SEC = 4
 local GUILD_ORDER_SYNC_TIMEOUT_SEC = 45
 
 local raid_status = {
@@ -68,9 +64,8 @@ local raid_status = {
 local sync_queue = {
   prefix = "PUSCHELZSYNC",
   ttlMs = 24 * 60 * 60 * 1000,
-  scopeOrder = { "calendar", "guildOrders", "simc" },
+  scopeOrder = { "guildOrders", "simc" },
   scopeLabels = {
-    calendar = "calendar",
     guildOrders = "orders",
     simc = "simc",
   },
@@ -124,248 +119,6 @@ local function stable_hash_number(text)
   return math.abs(hash)
 end
 
-local function calendar_time_to_ms(calendar_time, fallback_year, fallback_month, fallback_day)
-  if type(calendar_time) ~= "table" then
-    return nil
-  end
-
-  local timestamp = time({
-    year = calendar_time.year or fallback_year,
-    month = calendar_time.month or fallback_month,
-    day = calendar_time.monthDay or fallback_day,
-    hour = calendar_time.hour or 0,
-    min = calendar_time.minute or 0,
-    sec = 0,
-  })
-
-  if not timestamp then
-    return nil
-  end
-
-  return timestamp * 1000
-end
-
-local function is_raid_event(event)
-  if not event then
-    return false
-  end
-
-  local raid_enum = Enum and Enum.CalendarEventType and Enum.CalendarEventType.Raid
-  if raid_enum and event.eventType == raid_enum then
-    return true
-  end
-
-  if event.eventType == "RAID" then
-    return true
-  end
-
-  return false
-end
-
-local function is_world_event(event)
-  if not event then
-    return false
-  end
-
-  local calendar_type = event.calendarType
-  if calendar_type == "HOLIDAY" or calendar_type == "SYSTEM" then
-    return true
-  end
-
-  local holiday_enum = Enum and Enum.CalendarType and Enum.CalendarType.Holiday
-  local system_enum = Enum and Enum.CalendarType and Enum.CalendarType.System
-
-  if holiday_enum and calendar_type == holiday_enum then
-    return true
-  end
-
-  if system_enum and calendar_type == system_enum then
-    return true
-  end
-
-  return false
-end
-
-local function classify_event(event)
-  if is_raid_event(event) then
-    return "raid"
-  end
-
-  if is_world_event(event) then
-    return "world"
-  end
-
-  return nil
-end
-
-local function get_fallback_event_minutes(event_type, duration_minutes)
-  if duration_minutes and duration_minutes > 0 then
-    return duration_minutes
-  end
-
-  if event_type == "raid" then
-    return 180
-  end
-
-  return 120
-end
-
-local function normalize_end_time(start_ms, end_ms, event_type, duration_minutes)
-  if not start_ms then
-    return nil
-  end
-
-  if end_ms and end_ms > start_ms then
-    return end_ms
-  end
-
-  local fallback_minutes = get_fallback_event_minutes(event_type, duration_minutes)
-  return start_ms + (fallback_minutes * 60 * 1000)
-end
-
-local function map_calendar_invite_status(invite_status)
-  if invite_status == nil then
-    return nil
-  end
-
-  local status_number = tonumber(invite_status)
-  if status_number then
-    if status_number == 8 then
-      return "tentative"
-    end
-
-    if status_number == 1 or status_number == 3 or status_number == 6 then
-      return "signedUp"
-    end
-
-    return nil
-  end
-
-  local status_text = string.lower(tostring(invite_status))
-  if status_text == "" then
-    return nil
-  end
-  local status_compact = status_text:gsub("[%s_%-]+", "")
-
-  if status_text:find("tentative", 1, true) then
-    return "tentative"
-  end
-
-  if status_text:find("declin", 1, true)
-    or status_text:find("standby", 1, true)
-    or status_compact:find("notsigned", 1, true)
-    or status_text:find("invited", 1, true)
-    or status_text == "out"
-  then
-    return nil
-  end
-
-  if status_text:find("signed", 1, true)
-    or status_text:find("signup", 1, true)
-    or status_text:find("available", 1, true)
-    or status_text:find("confirm", 1, true)
-    or status_text:find("accept", 1, true)
-  then
-    return "signedUp"
-  end
-
-  return nil
-end
-
-local function get_calendar_invite_count()
-  if not C_Calendar then
-    return 0
-  end
-
-  if C_Calendar.EventGetNumInvites then
-    return C_Calendar.EventGetNumInvites() or 0
-  end
-
-  if C_Calendar.GetNumInvites then
-    return C_Calendar.GetNumInvites() or 0
-  end
-
-  return 0
-end
-
-local function get_calendar_invite_details(invite_index)
-  if not C_Calendar then
-    return nil, nil
-  end
-
-  if C_Calendar.EventGetInvite then
-    local first, second = C_Calendar.EventGetInvite(invite_index)
-    if type(first) == "table" then
-      return first.name, first.inviteStatus or first.status
-    end
-
-    if type(first) == "string" then
-      return first, second
-    end
-  end
-
-  if C_Calendar.GetInvite then
-    local name, _, _, _, invite_status = C_Calendar.GetInvite(invite_index)
-    return name, invite_status
-  end
-
-  return nil, nil
-end
-
-local function collect_open_calendar_event_attendees()
-  local invite_count = get_calendar_invite_count()
-  local attendees = {}
-  local seen = {}
-
-  for invite_index = 1, invite_count do
-    local invite_name, invite_status = get_calendar_invite_details(invite_index)
-    local mapped_status = map_calendar_invite_status(invite_status)
-    if mapped_status then
-      local display_name = type(invite_name) == "string" and invite_name:match("^%s*(.-)%s*$") or nil
-      if display_name and display_name ~= "" then
-        local attendee_key = string.lower(display_name)
-        if not seen[attendee_key] then
-          seen[attendee_key] = true
-          table.insert(attendees, {
-            name = display_name,
-            status = mapped_status,
-          })
-        end
-      end
-    end
-  end
-
-  table.sort(attendees, function(a, b)
-    return string.lower(a.name) < string.lower(b.name)
-  end)
-
-  if #attendees == 0 then
-    return nil
-  end
-
-  return attendees
-end
-
-local calendar_attendee_scan = {
-  inProgress = false,
-  events = nil,
-  pendingRaidEvents = {},
-  activeRaidEvent = nil,
-  scanGeneration = 0,
-  requestPending = false,
-  requestGeneration = 0,
-  pendingNotifyOnCompletion = false,
-  notifyOnCompletion = false,
-}
-
-local calendar_sync_ui = {
-  button = nil,
-  filterButton = nil,
-  buttonHooksInstalled = false,
-  state = "idle",
-  stateGeneration = 0,
-}
-
 local minimap_ui = {
   button = nil,
   dataObject = nil,
@@ -380,7 +133,7 @@ local auto_logging = {
   evaluationScheduled = false,
   combatLogAutoStarted = false,
   reminderFrame = nil,
-  lastReminderAtMs = 0,
+  lastReminderAtMs = nil,
 }
 
 local guild_order_sync = {
@@ -570,7 +323,7 @@ do
 
   local function show_combat_log_reminder()
     local now = now_runtime_ms()
-    if now - (auto_logging.lastReminderAtMs or 0) < 10000 then
+    if auto_logging.lastReminderAtMs and now - auto_logging.lastReminderAtMs < 10000 then
       return
     end
 
@@ -601,8 +354,6 @@ do
 
     if settings.autoEnableChatLog then
       set_chat_logging_enabled(true, "auto")
-    else
-      set_chat_logging_enabled(false, "auto")
     end
 
     if not settings.autoEnableCombatLog then
@@ -855,26 +606,6 @@ function sync_queue.current_local_pending_reload()
   return pending
 end
 
-function sync_queue.build_calendar_signature()
-  ensure_db()
-  local parts = {}
-
-  for _, event in ipairs(PuschelzDB.calendar.events or {}) do
-    sync_queue.append_hashed_field(parts, event.wowEventId)
-    sync_queue.append_hashed_field(parts, event.title)
-    sync_queue.append_hashed_field(parts, event.eventType)
-    sync_queue.append_hashed_field(parts, event.startTime)
-    sync_queue.append_hashed_field(parts, event.endTime)
-
-    for _, attendee in ipairs(event.attendees or {}) do
-      sync_queue.append_hashed_field(parts, attendee.name)
-      sync_queue.append_hashed_field(parts, attendee.status)
-    end
-  end
-
-  return tostring(stable_hash_number(table.concat(parts)))
-end
-
 function sync_queue.build_guild_orders_signature()
   ensure_db()
   local parts = {}
@@ -924,7 +655,6 @@ end
 
 function sync_queue.current_scope_signatures()
   return {
-    calendar = sync_queue.build_calendar_signature(),
     guildOrders = sync_queue.build_guild_orders_signature(),
     simc = sync_queue.build_simc_signature(),
   }
@@ -933,7 +663,6 @@ end
 function sync_queue.current_payload_fingerprint()
   local signatures = sync_queue.current_scope_signatures()
   return table.concat({
-    "calendar:" .. tostring(signatures.calendar or "0"),
     "guildOrders:" .. tostring(signatures.guildOrders or "0"),
     "simc:" .. tostring(signatures.simc or "0"),
   }, "|"), signatures
@@ -1358,621 +1087,6 @@ local function on_bank_slots_changed()
   if current_tab and pending_bank_tabs[current_tab] then
     pending_bank_tabs[current_tab] = nil
     query_next_bank_tab()
-  end
-end
-
-local function build_calendar_payload()
-  local events = {}
-  local seen = {}
-  local pending_raid_events = {}
-
-  for _, month_offset in ipairs(CALENDAR_MONTH_OFFSETS) do
-    local month_info = C_Calendar.GetMonthInfo(month_offset)
-    if month_info and month_info.numDays then
-      for month_day = 1, month_info.numDays do
-        local day_events = C_Calendar.GetNumDayEvents(month_offset, month_day) or 0
-        for event_index = 1, day_events do
-          local event = C_Calendar.GetDayEvent(month_offset, month_day, event_index)
-          if event then
-            local event_type = classify_event(event)
-            if event_type then
-              local start_ms = calendar_time_to_ms(
-                event.startTime,
-                month_info.year,
-                month_info.month,
-                month_day
-              )
-
-              if start_ms then
-                local raw_end_ms = calendar_time_to_ms(
-                  event.endTime,
-                  month_info.year,
-                  month_info.month,
-                  month_day
-                )
-                local end_ms = normalize_end_time(
-                  start_ms,
-                  raw_end_ms,
-                  event_type,
-                  event.duration
-                )
-
-                local source_event_id = tonumber(event.eventID)
-                local wow_event_id = source_event_id
-                if not wow_event_id then
-                  wow_event_id = stable_hash_number(
-                    string.format(
-                      "%s|%s|%s|%s|%s",
-                      tostring(event.title or ""),
-                      tostring(start_ms),
-                      tostring(event_type),
-                      tostring(month_offset),
-                      tostring(event_index)
-                    )
-                  )
-                end
-
-                local title = event.title or "Untitled Event"
-                local dedupe_key = string.format(
-                  "%s|%s|%s|%s|%s",
-                  tostring(wow_event_id),
-                  tostring(start_ms),
-                  tostring(end_ms),
-                  tostring(event_type),
-                  tostring(title)
-                )
-
-                if not seen[dedupe_key] then
-                  seen[dedupe_key] = true
-                  local event_payload = {
-                    wowEventId = wow_event_id,
-                    title = title,
-                    eventType = event_type,
-                    startTime = start_ms,
-                    endTime = end_ms,
-                  }
-
-                  if event_type == "raid" then
-                    table.insert(pending_raid_events, {
-                      monthOffset = month_offset,
-                      monthDay = month_day,
-                      eventIndex = event_index,
-                      sourceEventId = source_event_id,
-                      expectedStartTimeMs = start_ms,
-                      eventPayload = event_payload,
-                    })
-                  end
-
-                  table.insert(events, event_payload)
-                end
-              end
-            end
-          end
-        end
-      end
-    end
-  end
-
-  table.sort(events, function(a, b)
-    if a.startTime == b.startTime then
-      return a.wowEventId < b.wowEventId
-    end
-    return a.startTime < b.startTime
-  end)
-
-  return events, pending_raid_events
-end
-
-local function finalize_calendar_capture(events)
-  ensure_db()
-  PuschelzDB.calendar.events = events or {}
-  PuschelzDB.calendar.lastScannedAt = now_epoch_ms()
-  PuschelzDB.updatedAt = PuschelzDB.calendar.lastScannedAt
-  sync_queue.mark_local_pending_reload({ "calendar" }, true)
-end
-
-local function set_calendar_sync_button_state(state)
-  calendar_sync_ui.state = state or "idle"
-
-  local button = calendar_sync_ui.button
-  if not button then
-    return
-  end
-
-  if calendar_sync_ui.state == "syncing" then
-    button:SetEnabled(false)
-    button:SetText("Syncing...")
-    return
-  end
-
-  button:SetEnabled(true)
-  if calendar_sync_ui.state == "done" then
-    button:SetText("Synced")
-    return
-  end
-
-  button:SetText("Sync Calendar")
-end
-
-local function begin_calendar_sync_feedback()
-  calendar_sync_ui.stateGeneration = calendar_sync_ui.stateGeneration + 1
-  set_calendar_sync_button_state("syncing")
-end
-
-local function finish_calendar_sync_feedback()
-  calendar_sync_ui.stateGeneration = calendar_sync_ui.stateGeneration + 1
-  local state_generation = calendar_sync_ui.stateGeneration
-  set_calendar_sync_button_state("done")
-
-  if not C_Timer or not C_Timer.After then
-    set_calendar_sync_button_state("idle")
-    return
-  end
-
-  C_Timer.After(CALENDAR_SYNC_BUTTON_RESET_DELAY_SEC, function()
-    if calendar_sync_ui.stateGeneration ~= state_generation then
-      return
-    end
-
-    if calendar_attendee_scan.inProgress or calendar_attendee_scan.requestPending then
-      return
-    end
-
-    set_calendar_sync_button_state("idle")
-  end)
-end
-
-local function reset_calendar_attendee_scan_state()
-  calendar_attendee_scan.inProgress = false
-  calendar_attendee_scan.events = nil
-  calendar_attendee_scan.pendingRaidEvents = {}
-  calendar_attendee_scan.activeRaidEvent = nil
-  calendar_attendee_scan.requestPending = false
-  calendar_attendee_scan.pendingNotifyOnCompletion = false
-  calendar_attendee_scan.notifyOnCompletion = false
-end
-
-local function print_calendar_scan_complete(events)
-  local event_count = 0
-  local raid_event_count = 0
-  local events_with_attendees = 0
-  local attendee_total = 0
-
-  for _, event in ipairs(events or {}) do
-    event_count = event_count + 1
-    if event.eventType == "raid" then
-      raid_event_count = raid_event_count + 1
-      local attendees = event.attendees or {}
-      local attendee_count = #attendees
-      if attendee_count > 0 then
-        events_with_attendees = events_with_attendees + 1
-        attendee_total = attendee_total + attendee_count
-      end
-    end
-  end
-
-  print(
-    string.format(
-      "Puschelz: calendar scan complete (%d events, %d raids, %d raids with attendees, %d attendees total).",
-      event_count,
-      raid_event_count,
-      events_with_attendees,
-      attendee_total
-    )
-  )
-end
-
-local function complete_calendar_attendee_scan()
-  local events = calendar_attendee_scan.events or {}
-  local notify_on_completion = calendar_attendee_scan.notifyOnCompletion
-  reset_calendar_attendee_scan_state()
-  finalize_calendar_capture(events)
-  finish_calendar_sync_feedback()
-  if notify_on_completion then
-    print_calendar_scan_complete(events)
-  end
-end
-
-local function process_next_calendar_attendee_event()
-  if not calendar_attendee_scan.inProgress then
-    return
-  end
-
-  if not C_Calendar or not C_Calendar.OpenEvent then
-    complete_calendar_attendee_scan()
-    return
-  end
-
-  local next_raid_event = table.remove(calendar_attendee_scan.pendingRaidEvents, 1)
-  if not next_raid_event then
-    complete_calendar_attendee_scan()
-    return
-  end
-
-  calendar_attendee_scan.activeRaidEvent = next_raid_event
-  next_raid_event.openRequestedAtMs = now_runtime_ms()
-  C_Calendar.OpenEvent(
-    next_raid_event.monthOffset,
-    next_raid_event.monthDay,
-    next_raid_event.eventIndex
-  )
-end
-
-local function finish_active_calendar_event_attendee_capture(expected_raid_event)
-  if not calendar_attendee_scan.inProgress then
-    return
-  end
-
-  local active_raid_event = calendar_attendee_scan.activeRaidEvent
-  if not active_raid_event then
-    return
-  end
-
-  if expected_raid_event and active_raid_event ~= expected_raid_event then
-    -- Timer callbacks can fire after scan has advanced to another event.
-    return
-  end
-
-  local attendees = collect_open_calendar_event_attendees()
-  if attendees then
-    active_raid_event.eventPayload.attendees = attendees
-  end
-
-  if C_Calendar and C_Calendar.CloseEvent then
-    C_Calendar.CloseEvent()
-  end
-
-  calendar_attendee_scan.activeRaidEvent = nil
-  process_next_calendar_attendee_event()
-end
-
-local function calendar_open_event_matches_active(active_raid_event, month_offset, month_day, event_index)
-  if active_raid_event.openRequestedAtMs then
-    local elapsed_since_open_ms = now_runtime_ms() - active_raid_event.openRequestedAtMs
-    if elapsed_since_open_ms > (CALENDAR_ATTENDEE_SCAN_TIMEOUT_SEC * 1000) then
-      return false
-    end
-  end
-
-  if type(month_offset) ~= "number" then
-    month_offset = nil
-  end
-
-  if month_offset and (type(month_day) ~= "number" or type(event_index) ~= "number") then
-    month_offset = nil
-  end
-
-  if month_offset then
-    if active_raid_event.monthOffset ~= month_offset
-      or active_raid_event.monthDay ~= month_day
-      or active_raid_event.eventIndex ~= event_index
-    then
-      return false
-    end
-  end
-
-  if not C_Calendar or not C_Calendar.EventGetInfo then
-    return true
-  end
-
-  local opened_event_info = C_Calendar.EventGetInfo()
-  if type(opened_event_info) ~= "table" then
-    return true
-  end
-
-  local opened_event_id = tonumber(opened_event_info.eventID or opened_event_info.eventId)
-  if active_raid_event.sourceEventId and opened_event_id then
-    if active_raid_event.sourceEventId ~= opened_event_id then
-      return false
-    end
-  end
-
-  local month_info = C_Calendar.GetMonthInfo and C_Calendar.GetMonthInfo(active_raid_event.monthOffset)
-  local opened_start_ms = calendar_time_to_ms(
-    opened_event_info.startTime,
-    month_info and month_info.year,
-    month_info and month_info.month,
-    active_raid_event.monthDay
-  )
-  if opened_start_ms and active_raid_event.expectedStartTimeMs then
-    if opened_start_ms ~= active_raid_event.expectedStartTimeMs then
-      return false
-    end
-  end
-
-  local opened_title = type(opened_event_info.title) == "string" and opened_event_info.title or nil
-  local expected_title = active_raid_event.eventPayload and active_raid_event.eventPayload.title
-  if opened_title and opened_title ~= "" and type(expected_title) == "string" and expected_title ~= "" then
-    if opened_title ~= expected_title then
-      return false
-    end
-  end
-
-  return true
-end
-
-local function on_calendar_open_event(month_offset, month_day, event_index)
-  if not calendar_attendee_scan.inProgress then
-    return
-  end
-
-  local active_raid_event = calendar_attendee_scan.activeRaidEvent
-  if not active_raid_event then
-    return
-  end
-
-  if not calendar_open_event_matches_active(active_raid_event, month_offset, month_day, event_index) then
-    return
-  end
-
-  active_raid_event.openedAtMs = now_runtime_ms()
-
-  if not C_Timer or not C_Timer.After then
-    finish_active_calendar_event_attendee_capture(active_raid_event)
-    return
-  end
-
-  local scan_generation = calendar_attendee_scan.scanGeneration
-  C_Timer.After(CALENDAR_ATTENDEE_EVENT_OPEN_TIMEOUT_SEC, function()
-    if not calendar_attendee_scan.inProgress or calendar_attendee_scan.scanGeneration ~= scan_generation then
-      return
-    end
-
-    finish_active_calendar_event_attendee_capture(active_raid_event)
-  end)
-end
-
-local function on_calendar_update_invite_list()
-  if not calendar_attendee_scan.inProgress then
-    return
-  end
-
-  local active_raid_event = calendar_attendee_scan.activeRaidEvent
-  if not active_raid_event or not active_raid_event.openedAtMs then
-    return
-  end
-
-  finish_active_calendar_event_attendee_capture(active_raid_event)
-end
-
-local refresh_calendar_sync_button
-local request_calendar_scan
-local try_load_addon_by_name
-
-local function is_frame_widget(value)
-  return type(value) == "table" and type(value.GetObjectType) == "function"
-end
-
-local function is_visible_button_widget(value)
-  return is_frame_widget(value)
-    and value:GetObjectType() == "Button"
-    and type(value.IsShown) == "function"
-    and value:IsShown()
-end
-
-local function calendar_frame_is_visible()
-  return type(CalendarFrame) == "table"
-    and type(CalendarFrame.IsShown) == "function"
-    and CalendarFrame:IsShown()
-end
-
-local function open_calendar_frame()
-  if calendar_frame_is_visible() then
-    return true
-  end
-
-  try_load_addon_by_name("Blizzard_Calendar")
-
-  if calendar_frame_is_visible() then
-    return true
-  end
-
-  if type(ToggleCalendar) == "function" then
-    ToggleCalendar()
-  elseif type(CalendarFrame) == "table" then
-    if type(ShowUIPanel) == "function" then
-      ShowUIPanel(CalendarFrame)
-    elseif type(CalendarFrame.Show) == "function" then
-      CalendarFrame:Show()
-    end
-  end
-
-  return calendar_frame_is_visible()
-end
-
-local function get_calendar_filter_button()
-  if type(CalendarFrame) ~= "table" then
-    return nil
-  end
-
-  local explicit_candidates = {}
-  local function add_explicit_candidate(candidate)
-    if candidate ~= nil then
-      table.insert(explicit_candidates, candidate)
-    end
-  end
-
-  add_explicit_candidate(CalendarFrame.FilterButton)
-  add_explicit_candidate(CalendarFrame.EventFilterButton)
-  add_explicit_candidate(_G and _G.CalendarFilterButton)
-  add_explicit_candidate(_G and _G.CalendarFrameFilterButton)
-  add_explicit_candidate(_G and _G.CalendarEventFilterButton)
-
-  for index = 1, #explicit_candidates do
-    local candidate = explicit_candidates[index]
-    if is_visible_button_widget(candidate) then
-      return candidate
-    end
-  end
-
-  local queue = { CalendarFrame }
-  local seen = { [CalendarFrame] = true }
-  while #queue > 0 do
-    local current = table.remove(queue, 1)
-    if is_visible_button_widget(current) then
-      local name = current.GetName and current:GetName() or nil
-      local label = current.GetText and current:GetText() or nil
-      if type(name) == "string" and string.find(string.lower(name), "filter", 1, true) then
-        return current
-      end
-      if type(label) == "string" and string.find(string.lower(label), "filter", 1, true) then
-        return current
-      end
-    end
-
-    if is_frame_widget(current) then
-      for _, child in ipairs({ current:GetChildren() }) do
-        if is_frame_widget(child) and not seen[child] then
-          seen[child] = true
-          table.insert(queue, child)
-        end
-      end
-    end
-  end
-
-  return nil
-end
-
-local function anchor_calendar_sync_button(button, filter_button)
-  button:ClearAllPoints()
-  button:SetPoint("RIGHT", filter_button, "LEFT", -4, 0)
-end
-
-local function ensure_calendar_sync_button()
-  if type(CalendarFrame) ~= "table" then
-    return nil
-  end
-
-  if not calendar_sync_ui.button then
-    local button = CreateFrame("Button", nil, CalendarFrame, "UIPanelButtonTemplate")
-    button:SetSize(110, 22)
-    button:SetText("Sync Calendar")
-    button:SetScript("OnClick", function()
-      request_calendar_scan(true)
-    end)
-    calendar_sync_ui.button = button
-    set_calendar_sync_button_state(calendar_sync_ui.state)
-  end
-
-  if not calendar_sync_ui.buttonHooksInstalled and type(CalendarFrame.HookScript) == "function" then
-    CalendarFrame:HookScript("OnShow", function()
-      if refresh_calendar_sync_button then
-        refresh_calendar_sync_button()
-      end
-    end)
-    calendar_sync_ui.buttonHooksInstalled = true
-  end
-
-  return calendar_sync_ui.button
-end
-
-refresh_calendar_sync_button = function()
-  local button = ensure_calendar_sync_button()
-  local filter_button = get_calendar_filter_button()
-  if not button or not filter_button or not calendar_frame_is_visible() then
-    if button then
-      button:Hide()
-    end
-    return
-  end
-
-  calendar_sync_ui.filterButton = filter_button
-  anchor_calendar_sync_button(button, filter_button)
-  set_calendar_sync_button_state(calendar_sync_ui.state)
-  button:Show()
-end
-
-local function capture_calendar(notify_on_completion)
-  if calendar_attendee_scan.inProgress then
-    if notify_on_completion then
-      calendar_attendee_scan.notifyOnCompletion = true
-    end
-    return
-  end
-
-  local events, pending_raid_events = build_calendar_payload()
-  if #pending_raid_events == 0 then
-    finalize_calendar_capture(events)
-    finish_calendar_sync_feedback()
-    if notify_on_completion then
-      print_calendar_scan_complete(events)
-    end
-    return
-  end
-
-  calendar_attendee_scan.inProgress = true
-  calendar_attendee_scan.events = events
-  calendar_attendee_scan.pendingRaidEvents = pending_raid_events
-  calendar_attendee_scan.activeRaidEvent = nil
-  calendar_attendee_scan.notifyOnCompletion = notify_on_completion == true
-  calendar_attendee_scan.scanGeneration = calendar_attendee_scan.scanGeneration + 1
-  local scan_generation = calendar_attendee_scan.scanGeneration
-
-  if C_Timer and C_Timer.After then
-    C_Timer.After(CALENDAR_ATTENDEE_SCAN_TIMEOUT_SEC, function()
-      if calendar_attendee_scan.inProgress and calendar_attendee_scan.scanGeneration == scan_generation then
-        complete_calendar_attendee_scan()
-      end
-    end)
-  end
-
-  process_next_calendar_attendee_event()
-end
-
-local function consume_pending_calendar_request(notify_on_completion)
-  local merged_notify = notify_on_completion or calendar_attendee_scan.pendingNotifyOnCompletion
-  calendar_attendee_scan.requestPending = false
-  calendar_attendee_scan.pendingNotifyOnCompletion = false
-  capture_calendar(merged_notify)
-end
-
-request_calendar_scan = function(notify_on_completion)
-  if not C_Calendar or not C_Calendar.OpenCalendar then
-    if notify_on_completion then
-      print("Puschelz: calendar scan is unavailable right now.")
-    end
-    return
-  end
-
-  if calendar_attendee_scan.inProgress then
-    if notify_on_completion then
-      calendar_attendee_scan.notifyOnCompletion = true
-    end
-    begin_calendar_sync_feedback()
-    return
-  end
-
-  begin_calendar_sync_feedback()
-
-  if calendar_frame_is_visible() then
-    if calendar_attendee_scan.requestPending then
-      consume_pending_calendar_request(notify_on_completion)
-    else
-      capture_calendar(notify_on_completion)
-    end
-    return
-  end
-
-  calendar_attendee_scan.requestPending = true
-  calendar_attendee_scan.requestGeneration = calendar_attendee_scan.requestGeneration + 1
-  if notify_on_completion then
-    calendar_attendee_scan.pendingNotifyOnCompletion = true
-  end
-  local request_generation = calendar_attendee_scan.requestGeneration
-
-  open_calendar_frame()
-  C_Calendar.OpenCalendar()
-  if C_Timer and C_Timer.After then
-    C_Timer.After(1.5, function()
-      if not calendar_attendee_scan.requestPending or calendar_attendee_scan.requestGeneration ~= request_generation then
-        return
-      end
-
-      local pending_notify = calendar_attendee_scan.pendingNotifyOnCompletion
-      calendar_attendee_scan.requestPending = false
-      calendar_attendee_scan.pendingNotifyOnCompletion = false
-      capture_calendar(pending_notify)
-    end)
   end
 end
 
@@ -2965,6 +2079,7 @@ local function queue_simc_profile_request(run_droptimizer_now)
   ensure_db()
   refresh_player_metadata()
   local previous_request = type(PuschelzDB.simcRequest) == "table" and PuschelzDB.simcRequest or nil
+  local previous_updated_at = PuschelzDB.updatedAt
 
   local profile_text, profile_error = capture_current_simc_profile()
   if not profile_text then
@@ -2993,8 +2108,8 @@ local function queue_simc_profile_request(run_droptimizer_now)
 
   if not pending then
     PuschelzDB.simcRequest = previous_request
-    PuschelzDB.updatedAt = now_epoch_ms()
-    red_chat_message("Puschelz: SimC export captured, but pending reload was not created. Try /reload if the desktop client does not pick it up.")
+    PuschelzDB.updatedAt = previous_updated_at
+    red_chat_message("Puschelz: could not queue the SimC export, so the request was not saved. Try again.")
     return false
   end
 
@@ -4554,9 +3669,6 @@ local function update_minimap_menu_frame()
     and "Sync SimC + Run Droptimizer"
     or "Sync SimC + Run Droptimizer (requires SimulationCraft)"
 
-  buttons.calendar:SetText("Sync Calendar")
-  buttons.calendar:Enable()
-
   buttons.simc:SetText(simc_label)
   if has_simc then
     buttons.simc:Enable()
@@ -4591,7 +3703,7 @@ local function update_minimap_menu_frame()
   set_toggle_enabled(buttons.stopCombatLogOnLeave, contextual_enabled)
   set_toggle_enabled(buttons.showCombatLogReminder, combat_enabled)
 
-  frame:SetHeight(318)
+  frame:SetHeight(286)
 end
 
 local function ensure_minimap_menu_frame()
@@ -4601,7 +3713,7 @@ local function ensure_minimap_menu_frame()
   end
 
   local frame = CreateFrame("Frame", "PuschelzMinimapMenuFrame", UIParent, "BasicFrameTemplateWithInset")
-  frame:SetSize(320, 318)
+  frame:SetSize(320, 286)
   frame:SetFrameStrata("DIALOG")
   frame:SetClampedToScreen(true)
   frame:SetMovable(true)
@@ -4685,19 +3797,10 @@ local function ensure_minimap_menu_frame()
 
   local buttons = {}
 
-  buttons.calendar = create_menu_button(
-    "PuschelzMinimapMenuCalendarButton",
-    "Sync Calendar",
-    { point = "TOP", relativePoint = "TOP", x = 0, y = -38 },
-    function()
-      request_calendar_scan(true)
-    end
-  )
-
   buttons.simc = create_menu_button(
     "PuschelzMinimapMenuSimcButton",
     "Sync SimC + Run Droptimizer",
-    { relativeTo = buttons.calendar, point = "TOP", relativePoint = "BOTTOM", x = 0, y = -8 },
+    { point = "TOP", relativePoint = "TOP", x = 0, y = -38 },
     function()
       queue_simc_profile_request(true)
     end
@@ -4733,8 +3836,7 @@ local function ensure_minimap_menu_frame()
           auto_logging.combatLogAutoStarted = false
           auto_logging.print_message("Puschelz: combat logging armed and waiting for raid or instance group context.")
         else
-          auto_logging.set_combat_logging_enabled(true, "manual toggle")
-          auto_logging.combatLogAutoStarted = true
+          auto_logging.combatLogAutoStarted = auto_logging.set_combat_logging_enabled(true, "manual toggle")
         end
       else
         auto_logging.set_combat_logging_enabled(false, "manual toggle")
@@ -5023,7 +4125,6 @@ local function print_status()
   sync_queue.prune_guild_queue()
 
   local bank_tabs = PuschelzDB.guildBank.tabs or {}
-  local calendar_events = PuschelzDB.calendar.events or {}
   local guild_orders = PuschelzDB.guildOrders.orders or {}
   local simc_request = type(PuschelzDB.simcRequest) == "table" and PuschelzDB.simcRequest or nil
   local required_addon_summary = summarize_required_addon_compliance()
@@ -5032,17 +4133,14 @@ local function print_status()
   local bridge_acknowledgments = PuschelzBridgeSnapshot.get_sync_acknowledgments()
 
   local bank_scan = PuschelzDB.guildBank.lastScannedAt
-  local calendar_scan = PuschelzDB.calendar.lastScannedAt
   local guild_order_scan = PuschelzDB.guildOrders.lastScannedAt
 
   print(
     string.format(
-      "Puschelz: tabs=%d, events=%d, guildOrders=%d, bankScan=%s, calendarScan=%s, guildOrderScan=%s",
+      "Puschelz: tabs=%d, guildOrders=%d, bankScan=%s, guildOrderScan=%s",
       #bank_tabs,
-      #calendar_events,
       #guild_orders,
       bank_scan and date("%Y-%m-%d %H:%M", math.floor(bank_scan / 1000)) or "never",
-      calendar_scan and date("%Y-%m-%d %H:%M", math.floor(calendar_scan / 1000)) or "never",
       guild_order_scan and date("%Y-%m-%d %H:%M", math.floor(guild_order_scan / 1000)) or "never"
     )
   )
@@ -5115,7 +4213,6 @@ SlashCmdList.PUSCHELZ = function(msg)
       print("Puschelz: open the guild bank first to scan bank tabs.")
     end
 
-    request_calendar_scan(true)
     print("Puschelz: scan triggered.")
     return
   end
@@ -5162,9 +4259,6 @@ frame:RegisterEvent("CRAFTINGORDERS_SHOW_CRAFTER")
 frame:RegisterEvent("CRAFTINGORDERS_SHOW_CUSTOMER")
 frame:RegisterEvent("GUILDBANKFRAME_OPENED")
 frame:RegisterEvent("GUILDBANKBAGSLOTS_CHANGED")
-frame:RegisterEvent("CALENDAR_UPDATE_EVENT_LIST")
-frame:RegisterEvent("CALENDAR_OPEN_EVENT")
-frame:RegisterEvent("CALENDAR_UPDATE_INVITE_LIST")
 frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:RegisterEvent("GROUP_ROSTER_UPDATE")
 frame:RegisterEvent("PLAYER_DIFFICULTY_CHANGED")
@@ -5174,9 +4268,6 @@ frame:RegisterEvent("PLAYER_LOGOUT")
 frame:SetScript("OnEvent", function(_, event, ...)
   if event == "ADDON_LOADED" then
     local addon_name = ...
-    if addon_name == "Blizzard_Calendar" then
-      refresh_calendar_sync_button()
-    end
     return
   end
 
@@ -5220,24 +4311,6 @@ frame:SetScript("OnEvent", function(_, event, ...)
 
   if event == "GUILDBANKBAGSLOTS_CHANGED" then
     on_bank_slots_changed()
-    return
-  end
-
-  if event == "CALENDAR_OPEN_EVENT" then
-    on_calendar_open_event(...)
-    return
-  end
-
-  if event == "CALENDAR_UPDATE_INVITE_LIST" then
-    on_calendar_update_invite_list()
-    return
-  end
-
-  if event == "CALENDAR_UPDATE_EVENT_LIST" then
-    refresh_calendar_sync_button()
-    if calendar_attendee_scan.requestPending then
-      consume_pending_calendar_request(false)
-    end
     return
   end
 
