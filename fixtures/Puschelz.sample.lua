@@ -33,35 +33,6 @@ PuschelzDB = {
       },
     },
   },
-  calendar = {
-    lastScannedAt = 1739403600000,
-    events = {
-      {
-        wowEventId = 4242,
-        title = "Guild Raid",
-        eventType = "raid",
-        startTime = 1739443200000,
-        endTime = 1739450400000,
-        attendees = {
-          {
-            name = "Fluffybear-Blackhand",
-            status = "signedUp",
-          },
-          {
-            name = "Magebro-Blackhand",
-            status = "tentative",
-          },
-        },
-      },
-      {
-        wowEventId = 9901,
-        title = "Darkmoon Faire",
-        eventType = "world",
-        startTime = 1739600000000,
-        endTime = 1739686400000,
-      },
-    },
-  },
   guildOrders = {
     lastScannedAt = 1739407200000,
     orders = {
